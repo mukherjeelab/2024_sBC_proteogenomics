@@ -1,0 +1,333 @@
+---
+title: "2-ORFcalling Fasta Creation"
+author: "Kathryn Walters"
+date: "2023-05-11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r libraries, warning=FALSE, message=FALSE}
+# Import R packages that we will need in the analysis
+library(here)
+library(dplyr)
+library(tidyr)
+library(utils)
+library(readr)
+library(ggplot2)
+library(tximport)
+library(tibble)
+```
+
+
+```{r}
+## Summary of RMD contents
+#In this file I am filtering the ORF calls from Ribocode and ORFquant programs. These programs were ran previously on the cluster. The data here is used as a precursor data in Figures 2,3, and 4 and associated Supplemental Figures.  
+
+#1. Loading Files and Expression Data
+  #Loading of RiboCode and ORFquant data
+  #Reference Files needed
+  #Creating Txi file to get transcript expression data
+
+#2. Filtering ORFs based on expression
+  #Filtering Ribocode
+
+```
+
+# 1. Loading Files and Expression Data
+
+```{r import ORFcalling files, warning=FALSE, message=FALSE}
+
+#Loading of RiboCode and ORFquant data
+
+#ribocode program output
+ribocode <- read.table(here("ORFcallingFiles", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), sep = '\t', header = TRUE)
+
+#ORFquant program output is an Rdata file and so you have to load the file and then extract the dataframe that you need from all the others. 
+load(here("ORFcallingFiles", "Output from ORFcalling Software", "Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
+
+#pulling relevant information from Rdata file and making into dataframe.
+orfquant_minimal <- data.frame(
+id = ORFquant_results$ORFs_tx$ORF_id_tr,
+AA = ORFquant_results$ORFs_tx$Protein,
+annotation = ORFquant_results$ORFs_tx$ORF_category_Tx,
+gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_tx$transcript_id, transcriptType = ORFquant_results$ORFs_tx$transcript_biotype, annotationII = ORFquant_results$ORFs_tx$ORF_category_Tx
+)
+
+#ORFquant uses transcript ID but Ribocode uses geneID. I want to switch ORFquant to using geneID instead in order to combine. This creates a database that I will use later to do that. 
+ORFquant_IDswitch <- orfquant_minimal %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = FALSE) %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) %>% dplyr::select(id, ORF_ID)
+colnames(ORFquant_IDswitch) <- c("ORF_ID_transcript", "ORF_ID_gene")
+
+#saving my database for ID switching. 
+write_csv(ORFquant_IDswitch, here("accessories", "ORFquant_IDswitchResource.csv"))
+
+```
+
+
+```{r Reference files, warning=FALSE, message=FALSE}
+#Reference Files Needed
+
+#grabbing and creating necessary files
+geneInfo <- read_csv(here::here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+# create transcript-to-gene mapping
+tx2gene <- geneInfo[,c(2,1)]
+
+#gene symbols only
+gene_symbol <- geneInfo %>% dplyr::select(gene_id, symbol) %>% unique()
+
+#a list of genes that do not contain polyA tails. 
+nonpolyA <- readxl::read_xlsx(path = here::here("accessories","polyAminus.xlsx"), sheet = 1) %>% 
+  pull(Gene)
+
+#grabbing the metadata to make txi file.
+metadata <- readxl::read_xlsx(here::here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
+  dplyr::filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
+
+#simplifing the information
+metadata <- data.frame(
+  sample=metadata$SampleID, genotype = metadata$Genotype,
+  type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
+          T ~ "rna")),
+  rep=factor(case_when(metadata$Treatment2 == "RepA" ~ "A",
+                       T ~ "B")
+             )
+)
+
+metadata[1:2,2] <- "GFP+"
+#making sure the name is correct and will be able to access folder properly.
+metadata$sample <- case_when(metadata$type=="ribo" ~ paste(metadata$sample,"_R2",sep = ""),
+          T ~ metadata$sample)
+
+```
+
+
+```{r create Txi, message=FALSE, echo=FALSE, warning=FALSE}
+
+#Create Txi file from Salmon data
+
+#creating file paths to salmon data based on data type (ribo vs rna files have different paths)
+myquantfiles1 <- paste("data/",
+                      metadata$sample,
+                      "/quant.sf",
+                      sep = "")
+
+myquantfiles2 <- paste("data/",
+                      metadata$sample,
+                      "/quant.sf",
+                      sep = "")
+
+#combining the correct names
+myquantfiles <- append(myquantfiles1[1:2], myquantfiles2[3:6])
+
+#setting sample names  
+names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep = "_")
+
+#creating txi object
+txiTPM <- tximport(myquantfiles, type = 'salmon', dropInfReps = TRUE, countsFromAbundance = 'lengthScaledTPM', txOut = TRUE) 
+
+#Making TPM into its own table in case that is needed. Includes GeneID. 
+tpms <- txiTPM$abundance[,c(3,5)] %>%
+as.data.frame(.) %>%
+rownames_to_column(var = 'ensembl_gene_id')
+
+#setting expression cutoff value based on the histogram below
+tpms <- tpms %>% dplyr::filter(rowSums(tpms[,2:3]) > 0.1)
+#hist(log10(rowSums(txiTPM$abundance[,c(3,5)])), breaks = 30) + abline(v=log10(.1), col = "red")
+
+#getting a list of transcript IDs from counts that are expressed
+myTxs <- txiTPM$counts[,c(3,5)] %>% as.data.frame() %>%
+  rownames_to_column(var = "transcript_id")
+
+#setting threshold
+myTxs <- myTxs %>% dplyr::filter(rowSums(myTxs[,2:3]) > 4)
+
+```
+
+
+# 2. Filtering ORFs based on expression #START HERE - FIGURE OUT REPRODUCIBLE GFFCOMPARE
+
+
+```{r Filtering Ribocode, warning=FALSE, message=FALSE}
+
+#Keep only ORFs from expressed transcripts. 
+ribocodeTPMfiltered <- ribocode %>% dplyr::filter(transcript_id %in% tpms$ensembl_gene_id)
+
+#Make sure novel categories aren't just alternative isoforms or completely contained in CDS of annotated. 
+gffCompare_RC <- read_tsv(here("accessories", "gffCompare", "RC.Ribocode_renamed_final.gtf.tmap"))
+
+ribocodeTPMfiltered <- left_join(ribocodeTPMfiltered, gffCompare_RC, by = c("ORF_ID" = "qry_gene_id")) %>% unique() %>% na.omit()
+
+ribocodeTPMfiltered %>% dplyr::select(ORF_type, class_code) %>% group_by(ORF_type) %>% table()
+
+#Rules, if it's annotated, keep it. If it's not annotated and it's not = or c, keep it. 
+
+ribocodeTPMfiltered <- ribocodeTPMfiltered %>% mutate(keepColumn = case_when(ORF_type == "annotated" ~ "keep", ORF_type != "annotated" & class_code == "c" ~ "throw", ORF_type != "annotated" & class_code == "=" ~ "throw", .default = "keep"))
+
+ribocodeTPMfiltered <- ribocodeTPMfiltered %>% filter(keepColumn == "keep")
+
+
+```
+
+
+# Ribocode AA collapsing
+#As part of the adventure in collapsing these datsets into one, I first want to get rid of AA duplicates from each individual dataset. 
+
+```{r AA collapsing ribocode, message=FALSE, warning=FALSE, echo=FALSE}
+
+#first I want to collapse RiboCode to make sure there aren't duplicates on the AA level. 
+
+#grabbing AA seqs and naming them after the ORF_ID
+riboSeqs <- ribocodeTPMfiltered$AAseq
+names(riboSeqs) <- ribocodeTPMfiltered$ORF_ID
+
+#making it a dataframe so I can pull the duplicated ones and make a list. 
+riboCodeSeqs <- data.frame(ORF_ID = names(riboSeqs), riboSeqs)
+dupIDs <- riboCodeSeqs[duplicated(riboCodeSeqs$riboSeqs), ] %>% dplyr::select(ORF_ID)
+dupID <- list.append(dupIDs)
+
+#pulling the all rows with duplicated ORFIDs and the unique ones to make two separate dataframes. 
+riboCodeDups <- riboCodeSeqs[riboCodeSeqs$ORF_ID %in% dupID$ORF_ID, ]
+riboCodeUniq <- riboCodeSeqs[!(riboCodeSeqs$ORF_ID %in% dupID$ORF_ID), ]
+
+#so essentially, 4555 AA sequences are duplicated in ribocode. 
+
+#getting extra information on the ORF types. From the duplicated, we want to prioritize keeping specific categories like annotated. 
+riboCodeDups <- left_join(riboCodeDups, ribocode[,1:2], by = c("ORF_ID")) %>% unique()
+
+riboCodeCollapsed1 <- riboCodeDups[,c(1,3)] %>% unique()
+
+# Convert ORF_Type to a factor with ordered level
+riboCodeCollapsed1$ORF_type <- factor(riboCodeCollapsed1$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'dORF', 'uORF', 'Overlap_dORF', 'Overlap_uORF', 'internal'))
+
+levels(riboCodeCollapsed1$ORF_type)
+
+riboCodeCollapsed1 <- arrange(riboCodeCollapsed1, ORF_ID, ORF_type)
+
+riboCodeCollapsed1 <- riboCodeCollapsed1[!duplicated(riboCodeCollapsed1$ORF_ID),]
+
+riboCodeUniq <- left_join(riboCodeUniq, ribocodeTPMfiltered[c(1,29,2,5)], by = c("ORF_ID")) %>% dplyr::select(c("ORF_ID", "AAseq", "ORF_type", "gene_id")) %>% unique()
+
+riboCodeCollapsed1 <- left_join(riboCodeCollapsed1, ribocodeTPMfiltered[c(1,29,2,5)], by = c("ORF_ID")) %>% dplyr::select(c("ORF_ID", "AAseq", "ORF_type.x", "gene_id")) %>% unique()
+
+colnames(riboCodeCollapsed1) <- c("ORF_ID", "AAseq", "ORF_type", "gene_id")
+
+riboCodeAAFiltered <- rbind(riboCodeUniq, riboCodeCollapsed1)
+
+riboCodeAAFiltered$ORF_type %>% table()
+riboCodeAAFiltered <- data.frame(lapply(riboCodeAAFiltered, function(x) { gsub("Overlap_uORF", "uORF", x)}))
+riboCodeAAFiltered <- data.frame(lapply(riboCodeAAFiltered, function(x) { gsub("Overlap_dORF", "dORF", x)}))
+riboCodeAAFiltered <- data.frame(lapply(riboCodeAAFiltered, function(x) { gsub("internal", "other", x)}))
+riboCodeAAFiltered$ORF_type %>% table()
+
+#write_csv(riboCodeAAFiltered, here("ORFcalling", "Expression Filtered ORFcalling", "RiboCodeFiltered.csv"))
+
+#only the ORF_id and sequence to make a fasta with. 
+#write_csv(riboCodeAAFiltered[,c(1,2)], here("ORFcalling", "Fasta Files for Alignment", "RibocodeFilteredFasta.csv"))
+```
+
+
+
+
+```{r ORFquant, warning=FALSE, message=FALSE}
+orfQuant_TMPfiltered <- orfquant_minimal %>% filter(transcript_id %in% tpms$ensembl_gene_id)
+
+ORFvgencode <- read_tsv(here("accessories", "gffCompare", "ORFquant.ORFquant_CDS_final.gtf.tmap"))
+
+orfQuant_TMPfiltered <- left_join(orfQuant_TMPfiltered, ORFvgencode, by = c("id" = "qry_gene_id" )) %>% na.omit()
+
+#need to fix annotated category to be all the same.
+orfQuant_TMPfiltered <- data.frame(lapply(orfQuant_TMPfiltered, function(x) { gsub("N_truncation", "ORF_annotated", x)}))
+
+orfQuant_TMPfiltered %>% dplyr::select(annotation, class_code) %>% group_by(annotation) %>% table()
+
+#Rules, if it's annotated, keep it. If it's not annotated and it's not = or c, keep it.
+
+orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% mutate(keepColumn = case_when(annotation == "ORF_annotated" ~ "keep", annotation != "ORF_annotated" & class_code == "c" ~ "throw", annotation != "ORF_annotated" & class_code == "=" ~ "throw", .default = "keep"))
+
+orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% filter(keepColumn == "keep")
+
+
+```
+
+
+```{r AA collapsing ORFquant, message=FALSE, warning=FALSE, echo=FALSE}
+#first I want to collapse ORFquant down to the gene level. 
+
+orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = TRUE) %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) 
+orfQuant_TMPfiltered <- orfQuant_TMPfiltered[,-c(1,3,4)] %>% unique() #didn't remove any genes
+
+#grabbing AA seqs and naming them after the ORF_ID
+ORFqSeqs <- orfQuant_TMPfiltered$AA
+names(ORFqSeqs) <- orfQuant_TMPfiltered$ORF_ID
+
+#looking at some things
+dplyr::count(unique(as.data.frame(ORFqSeqs)))
+dplyr::count(as.data.frame(ORFqSeqs))
+duplicated(as.data.frame(ORFqSeqs))
+
+#making it a dataframe so I can pull the duplicated ones and make a list. 
+ORFqSeqs <- data.frame(ORF_ID = names(ORFqSeqs), ORFqSeqs)
+dupIDs_OQ <- ORFqSeqs[duplicated(ORFqSeqs$ORFqSeqs), ] %>% dplyr::select(ORF_ID)
+dupID_OQ <- list.append(dupIDs_OQ)
+
+#pulling the all rows with duplicated ORFIDs and the unique ones to make two separate dataframes. 
+oqDups <- ORFqSeqs[ORFqSeqs$ORF_ID %in% dupID_OQ$ORF_ID, ]
+oqUniq <- ORFqSeqs[!(ORFqSeqs$ORF_ID %in% dupID_OQ$ORF_ID), ]
+
+#so essentially, 25 AA sequences are duplicated in ORFquant 
+
+#getting extra information on the ORF types. From the duplicated, we want to prioritize keeping specific categories like annotated. 
+oqDups <- left_join(oqDups, orfQuant_TMPfiltered, by = c("ORF_ID")) %>% unique()
+oqDups <- oqDups[,c(1,2,4)]
+
+oqCollapsed1 <- oqDups[,c(1,3)] %>% unique()
+
+table(oqCollapsed1$annotation)
+# Convert ORF_Type to a factor with ordered level
+oqCollapsed1$annotation <- factor(oqCollapsed1$annotation, order = TRUE, levels =c('ORF_annotated', 'N_truncation', 'N_extension', 'dORF'))
+
+levels(oqCollapsed1$annotation)
+
+oqCollapsed1 <- arrange(oqCollapsed1, ORF_ID, annotation)
+
+oqCollapsed1 <- oqCollapsed1[!duplicated(oqCollapsed1$ORF_ID),]
+
+oqUniq <- left_join(oqUniq, orfQuant_TMPfiltered, by = c("ORF_ID")) %>% dplyr::select(c("ORF_ID", "AA", "annotation", "gene")) %>% unique()
+
+oqCollapsed1 <- left_join(oqCollapsed1, orfQuant_TMPfiltered, by = c("ORF_ID")) %>%  dplyr::select(c("ORF_ID", "AA", "annotation.x", "gene")) %>% unique()
+
+colnames(oqCollapsed1) <- c("ORF_ID", "AA", "annotation", "gene")
+
+ORFquantAAFiltered <- rbind(oqUniq, oqCollapsed1)
+table(riboCodeAAFiltered$ORF_type)
+table(ORFquantAAFiltered$annotation)
+
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("nested_ORF", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("ORF_annotated", "annotated", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("overl_uORF", "uORF", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("overl_dORF", "dORF", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("N_truncation", "annotated", x)}))
+
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("C_extension", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("C_truncation", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("N_extension", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("NC_extension", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("Nother", "other", x)}))
+ORFquantAAFiltered <- data.frame(lapply(ORFquantAAFiltered, function(x) { gsub("readthrough", "other", x)}))
+table(ORFquantAAFiltered$annotation)
+
+
+write_csv(ORFquantAAFiltered, here("ORFcalling", "Expression Filtered ORFcalling", "ORFquant_Filtered.csv"))
+
+#only the ORF_id and sequence to make a fasta with. 
+write_csv(ORFquantAAFiltered[,c(1,2)], here("ORFcalling", "Fasta Files for Alignment", "ORFquantFilteredFasta.csv"))
+```
+
