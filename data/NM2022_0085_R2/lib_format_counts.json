@@ -1,0 +1,22 @@
+{
+    "read_files": "[ STAR/NM2022_0085_R2.fastq ]",
+    "expected_format": "SF",
+    "compatible_fragment_ratio": 1.0,
+    "num_compatible_fragments": 8734208,
+    "num_assigned_fragments": 8734208,
+    "num_frags_with_concordant_consistent_mappings": 8734135,
+    "num_frags_with_inconsistent_or_orphan_mappings": 133,
+    "strand_mapping_bias": 0.9999847726220446,
+    "MSF": 0,
+    "OSF": 0,
+    "ISF": 0,
+    "MSR": 0,
+    "OSR": 0,
+    "ISR": 0,
+    "SF": 8734135,
+    "SR": 133,
+    "MU": 0,
+    "OU": 0,
+    "IU": 0,
+    "U": 0
+}
