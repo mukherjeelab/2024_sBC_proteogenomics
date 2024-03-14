@@ -1,0 +1,44 @@
+---
+title: "1-RiboQCdata"
+author: "Kathryn Walters"
+date: "2024-03-14"
+output: html_document
+---
+
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(pak)
+library(here)
+library(conflicted)
+
+#pkg_install("lcalviell/Ribo-seQC")
+library(RiboseQC)
+
+#pkg_install("lcalviell/ORFquant")
+library(ORFquant)
+conflict_prefer("prepare_annotation_files", "ORFquant") #ORFquant was updated and thus should use this command from this package
+```
+
+
+# QC for Ribosome Profiling 
+## Requires input files not included in repository
+
+```{r pressure, echo=FALSE, message=FALSE, warning=FALSE}
+
+#Note: to run these programs, you will need to download or obtain a 2bit file and gtf file from the genome assembly used to prepare the bam files. Due to their large size, these are not included in our repository. 
+
+#prepare annotation files creates a Rannot file that will be used for the QC analysis.
+prepare_annotation_files(annotation_directory = here("accessories/QC_Anno_Files"),
+                         twobit_file = here("accessories", "GRCh38.primary_assembly.genome.2bit"),
+                         gtf_file = here("accessories", "gencode.v26.primary_assembly.annotation.gtf"), export_bed_tables_TxDb = F,forge_BSgenome = T,create_TxDb = T)
+
+
+
+#this creates all QC plots as well as an output file that is essential for running ORFquant program. The bam file was generated using the mergeBams.bsub script included in script folder and due to size is not included in repo. 
+RiboseQC_analysis(annotation_file=here("accessories", "QC_Anno_Files", "gencode.v26.primary_assembly.annotation.gtf_Rannot"), bam_files = here("input", "Betacell_mergedBamsSorted.sortedByCoord.out.bam"), report_file = here("plots", "QCplots", "RibosomeProfiling_QC.html"), write_tmp_files = T)
+                  
+
+#To run ORFquant, I used the Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn file generated and the gencode.v26.primary_assembly.annotation.gtf_Rannot generated and ran the ORFQuant.R script found in the scripts folder. This was run in a cluster environment. 
+
+```
+
