@@ -1,0 +1,51 @@
+#! /usr/bin/env bash
+#BSUB -n 2 # run 2 core
+#BSUB -R "select[mem>30] rusage[mem=30]"
+#BSUB -o logs/mergeBAM_%J.log # write logs with jobnumber appended
+#BSUB -e logs/mergeBAM_%J.out # write err logs with jobnumber appended
+
+
+. /usr/share/Modules/init/bash
+module load modules modules-init modules-python
+module load python anaconda
+module load java
+
+
+WD="/beevol/home/bartholk/russ_ALL_2023"
+
+# SET # cores
+N="2"
+
+
+module load samtools
+
+#BetaCells
+#samtools merge ${WD}/ORFbamFiles/Betacell_mergedBamsAligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0085_R2Aligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0086_R2Aligned.sortedByCoord.out.bam
+#samtools sort ${WD}/ORFbamFiles/Betacell_mergedBamsAligned.sortedByCoord.out.bam -o ${WD}/ORFbamFiles/Betacell_mergedBamsSorted.sortedByCoord.out.bam
+#samtools index ${WD}/ORFbamFiles/Betacell_mergedBamsSorted.sortedByCoord.out.bam
+
+
+#hPSC RP method
+samtools merge ${WD}/ORFbamFiles/hPSC_RP_mergedBamsAligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0001_R2Aligned.sortedByCoord.out.bam  ${WD}/ORFbamFiles/NM2022_0002_R2Aligned.sortedByCoord.out.bam
+samtools sort ${WD}/ORFbamFiles/hPSC_RP_mergedBamsAligned.sortedByCoord.out.bam -o ${WD}/ORFbamFiles/hPSC_RP_mergedBamsSorted.sortedByCoord.out.bam
+samtools index ${WD}/ORFbamFiles/hPSC_RP_mergedBamsSorted.sortedByCoord.out.bam
+
+
+#DE RP method
+samtools merge ${WD}/ORFbamFiles/DE_RP_mergedBamsAligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0003_R2Aligned.sortedByCoord.out.bam  ${WD}/ORFbamFiles/NM2022_0004_R2Aligned.sortedByCoord.out.bam
+samtools sort ${WD}/ORFbamFiles/DE_RP_mergedBamsAligned.sortedByCoord.out.bam -o ${WD}/ORFbamFiles/DE_RP_mergedBamsSorted.sortedByCoord.out.bam
+samtools index ${WD}/ORFbamFiles/DE_RP_mergedBamsSorted.sortedByCoord.out.bam
+
+
+#hPSC IP method
+samtools merge ${WD}/ORFbamFiles/hPSC_IP_mergedBamsAligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0005_R2Aligned.sortedByCoord.out.bam  ${WD}/ORFbamFiles/NM2022_0006_R2Aligned.sortedByCoord.out.bam
+samtools sort ${WD}/ORFbamFiles/hPSC_IP_mergedBamsAligned.sortedByCoord.out.bam -o ${WD}/ORFbamFiles/hPSC_IP_mergedBamsSorted.sortedByCoord.out.bam
+samtools index ${WD}/ORFbamFiles/hPSC_IP_mergedBamsSorted.sortedByCoord.out.bam
+
+
+#DE IP method
+samtools merge ${WD}/ORFbamFiles/DE_IP_mergedBamsAligned.sortedByCoord.out.bam ${WD}/ORFbamFiles/NM2022_0007_R2Aligned.sortedByCoord.out.bam  ${WD}/ORFbamFiles/NM2022_0008_R2Aligned.sortedByCoord.out.bam
+samtools sort ${WD}/ORFbamFiles/DE_IP_mergedBamsAligned.sortedByCoord.out.bam -o ${WD}/ORFbamFiles/DE_IP_mergedBamsSorted.sortedByCoord.out.bam
+samtools index ${WD}/ORFbamFiles/DE_IP_mergedBamsSorted.sortedByCoord.out.bam
+
+module unload samtools

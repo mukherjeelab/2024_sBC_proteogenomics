@@ -1,0 +1,82 @@
+#! /usr/bin/env bash
+#BSUB -n 10 # run 10 core
+#BSUB -J rna[1-12]%6  # run on 12 samples, submitted 6 at a time
+#BSUB -R "select[mem>30] rusage[mem=30]" # use 30Gb of memory, require a node with >30Gb
+#BSUB -o logs/russ_rna_%J.log # write logs with jobnumber appended
+#BSUB -e logs/russ_rna_%J.out # write err logs with jobnumber appended
+
+. /usr/share/Modules/init/bash
+module load modules modules-init modules-python
+module load python anaconda
+
+
+mapfile -t libs <rnafiles
+
+# select 1 of those bams using the lsf job index
+lib=${libs[$(($LSB_JOBINDEX - 1))]}
+
+
+
+N="10"
+
+salmon="/beevol/home/mukherjee/rnaseqtools/bin/salmon-1.6.0_linux_x86_64/bin/salmon"
+salmonINDEX="/beevol/home/neellab/genomes/human/hg38/indices/salmon_gencodev26_noprimary/new"
+
+STAR="/beevol/home/mukherjee/rnaseqtools/bin/STAR-2.6.0a/bin/Linux_x86_64_static/STAR"
+starIndex="/beevol/home/neellab/genomes/human/hg38/indices/star"
+
+
+${salmon} quant \
+	-i ${salmonINDEX} \
+	-l A \
+	-p ${N} \
+	-1 <(gunzip -c fastq/${lib}_R1.fastq.gz) \
+	-2 <(gunzip -c fastq/${lib}_R2.fastq.gz) \
+	--allowDovetail \
+	--validateMappings \
+	-o salmon/${lib}
+
+
+/beevol/home/mukherjee/rnaseqtools/bin/STAR-2.6.0a/bin/Linux_x86_64_static/STAR  \
+	--readFilesIn fastq/${lib}_R1.fastq.gz fastq/${lib}_R2.fastq.gz \
+	--readFilesCommand gunzip -c \
+	--outFileNamePrefix STAR/${lib} \
+	--genomeDir ${starIndex}  \
+	--outFilterMultimapNmax 20 \
+	--outFilterMismatchNmax 999 \
+	--outFilterType BySJout \
+	--alignSJoverhangMin 8 \
+	--alignSJDBoverhangMin 1 \
+	--sjdbScore 1 \
+	--outFilterMismatchNoverReadLmax 0.04 \
+	--outSAMunmapped Within \
+	--outSAMtype BAM Unsorted \
+	--outSAMattributes All \
+	--runThreadN ${N}
+
+source activate ribomaster
+module load samtools
+
+# Sort and index bam file
+samtools sort -@ ${N} STAR/${lib}Aligned.out.bam -o STAR/${lib}.bam
+samtools index STAR/${lib}.bam
+
+## Create coverage bigwigs
+
+bamCoverage -b STAR/${lib}.bam \
+	-o STAR/${lib}_fwd.bw \
+	--binSize 1 \
+	-p ${N} \
+	--normalizeUsing CPM \
+	--filterRNAstrand forward
+
+bamCoverage -b STAR/${lib}.bam \
+	-o STAR/${lib}_rev.bw \
+	--binSize 1 \
+	-p ${N} \
+	--normalizeUsing CPM \
+	--filterRNAstrand reverse
+
+
+conda deactivate
+

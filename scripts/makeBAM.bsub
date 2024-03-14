@@ -1,0 +1,59 @@
+#! /usr/bin/env bash
+#BSUB -n 10 # run 10 core
+#BSUB -R "select[mem>30] rusage[mem=30]"
+#BSUB -o logs/makeBAM_%J.log # write logs with jobnumber appended
+#BSUB -e logs/makeBAM_%J.out # write err logs with jobnumber appended
+#BSUB -J riboseq[1-10]%10
+
+
+. /usr/share/Modules/init/bash
+module load modules modules-init modules-python
+module load python anaconda
+module load java
+
+
+GTF="/beevol/home/neellab/genomes/human/hg38/gtf/gencode.v26.primary_assembly.annotation.gtf.gz"
+FASTA="/beevol/home/neellab/genomes/human/hg38/fasta/GRCh38.primary_assembly.genome.fa"
+genome_index="/beevol/home/neellab/genomes/human/hg38/indices/starRibo"
+STAR="/beevol/home/mukherjee/rnaseqtools/bin/STAR-2.6.0a/bin/Linux_x86_64_static/STAR"
+rRNA_index="/beevol/home/neellab/genomes/human/hg38/indices/bowtie"
+WD="/beevol/home/bartholk/russ_ALL_2023"
+
+
+# SET # cores
+N="10"
+
+mapfile -t libs < riboFiles
+
+# select 1 of those bams using the lsf job index
+lib=${libs[$(($LSB_JOBINDEX - 1))]}
+
+
+${STAR}  \
+	--readFilesIn ${WD}/STAR/${lib}.fastq \
+	--outFileNamePrefix ${WD}/ORFbamFiles/${lib} \
+	--genomeDir ${genome_index}  \
+	--alignEndsType EndToEnd \
+	--outFilterMismatchNmax 2 \
+	--outFilterMultimapNmax 1 \
+	--outFilterMatchNmin 16 \
+	--outFilterType BySJout \
+	--alignSJoverhangMin 500 \
+	--outSAMunmapped Within \
+	--outSAMtype BAM Unsorted SortedByCoordinate \
+	--quantMode TranscriptomeSAM GeneCounts \
+	--outSAMattributes All \
+	--runThreadN ${N}
+
+
+# Sort and index bam file
+
+module load samtools
+
+samtools sort -@ ${N} ${WD}/ORFbamFiles/${lib}Aligned.out.bam -o ${WD}/ORFbamFiles/${lib}.bam
+samtools index ${WD}/ORFbamFiles/${lib}.bam
+
+module unload samtools
+
+
+

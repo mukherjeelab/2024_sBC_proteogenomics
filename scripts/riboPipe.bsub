@@ -1,0 +1,168 @@
+#! /usr/bin/env bash
+
+#BSUB -n 10 # run 10 core
+#BSUB -J riboseq[1-10]%5  # run on 5 samples, submitted 5 at a time
+#BSUB -q rna
+#BSUB -R "select[mem>30] rusage[mem=30]"
+#BSUB -R "span[hosts=1]"
+#BSUB -o logs/ribo_%J.log # write logs with jobnumber appended
+#BSUB -e logs/ribo_%J.out # write err logs with jobnumber appended
+
+# version 1.1 as of 2023_04_13
+. /usr/share/Modules/init/bash
+
+module load modules modules-init modules-python
+
+# module load python anaconda
+
+mapfile -t libs <riboFiles
+
+# SET # cores
+N="10"
+
+genome_index="/beevol/home/neellab/genomes/human/hg38/indices/starRibo"
+STAR="/beevol/home/mukherjee/rnaseqtools/bin/STAR-2.6.0a/bin/Linux_x86_64_static/STAR"
+rRNA_index="/beevol/home/neellab/genomes/human/hg38/indices/bowtie"
+salmon="/beevol/home/mukherjee/rnaseqtools/bin/salmon-1.6.0_linux_x86_64/bin/salmon"
+salmonINDEX="/beevol/home/neellab/genomes/human/hg38/indices/salmon_gencodev26_noprimary_RIBO/ribo"
+
+# select 1 of those bams using the lsf job index
+lib=${libs[$(($LSB_JOBINDEX - 1))]}
+
+
+# only using read 2, which is a reverse complement (rc)
+# read 2 looks like:
+# [UMI][3' adapter rc][insert][5' adapter rc][crap]
+# UMI: first 12 nucleotides
+# 3' adapter: AACTGTAGGCACCATCAAT
+# 3' adapter rc: ATTGATGGTGCCTACAGTT
+# 5' adapter: GTTCAGAGTTCTACAGTCCGACGATC
+# 5' adapter rc: GATCGTCGGACTGTAGAACTCTGAAC
+
+# STEPS:
+## 1. Extract the UMI 
+## 2. Trim both adapters and filter short reads
+## 3. Reverse complement fastq
+## 4. Separate rRNA reads
+## 5. Map non-rRNA reads to human genome with STAR
+## 6. Deduplicate bam file
+## 7. Create coverage bigwigs
+## 8. Quantify non-rRNA with Salmon
+
+
+# 1. Extract the UMI 
+
+source activate ribomaster
+
+umi_tools extract \
+    -I fastq/${lib}.fastq.gz \
+    --extract-method=string \
+    --bc-pattern=NNNNNNNNNNNN \
+    -L processing/${lib}_umi_report.txt \
+    | gzip > processing/${lib}_umi.fastq.gz
+
+## 2. Trim both adapters and filter short reads
+
+# source activate riboseq
+
+cutadapt -j ${N} \
+    -m 18 \
+    -a ^ATTGATGGTGCCTACAGTT...GATCGTCGGACTGTAGAACTCTGAAC \
+    -o processing/${lib}_umi_trim.fastq.gz \
+    --json=processing/${lib}_trim_report.txt \
+    processing/${lib}_umi.fastq.gz
+
+## 3. Reverse complement fastq
+
+module load fastx-toolkit
+
+zcat processing/${lib}_umi_trim.fastq.gz | \
+    fastx_reverse_complement - \
+    | gzip > processing/${lib}_umi_trim_rc.fastq.gz
+
+## 4. Separate rRNA reads
+
+module load bowtie samtools
+
+bowtie ${rRNA_index}/45S -a --best --strata -v 2 -p ${N} -S \
+    --al processing/${lib}_rRNA.fastq  \
+    --un processing/${lib}_reads.fastq \
+    -q processing/${lib}_umi_trim_rc.fastq.gz 2> processing/${lib}_rRNAstats.txt | \
+    samtools view -hS -F 4 - > processing/${lib}.sam
+
+samtools view -bS processing/${lib}.sam > processing/${lib}.unsort.bam
+
+samtools sort -@ ${N} processing/${lib}.unsort.bam -o processing/${lib}_rRNA.bam
+
+samtools index -@ ${N} processing/${lib}_rRNA.bam
+
+
+## 5. Map non-rRNA reads to human genome with STAR
+${STAR}  \
+    --readFilesIn processing/${lib}_reads.fastq \
+    --outFileNamePrefix STAR/${lib} \
+    --genomeDir ${genome_index}  \
+    --alignEndsType EndToEnd \
+    --outFilterMismatchNmax 4 \
+    --outFilterMultimapNmax 8 \
+    --outFilterType BySJout \
+    --alignSJoverhangMin 500 \
+    --outSAMunmapped Within \
+    --outSAMtype BAM Unsorted \
+    --outSAMattributes All \
+    --runThreadN ${N}
+
+# Sort and index bam file
+
+samtools sort -@ ${N} STAR/${lib}Aligned.out.bam -o STAR/${lib}_dup.bam
+
+samtools index STAR/${lib}_dup.bam
+
+
+## 6. Deduplicate bam file
+
+umi_tools dedup --method=unique \
+    -I STAR/${lib}_dup.bam \
+    -S STAR/${lib}.bam \
+    -L STAR/${lib}_dup_report.txt \
+    -E STAR/${lib}_dup_error.txt
+
+samtools index STAR/${lib}.bam
+
+
+## 7. Create coverage bigwigs
+
+bamCoverage -b STAR/${lib}.bam \
+    -o STAR/${lib}_fwd.bw \
+    --binSize 1 \
+    --effectiveGenomeSize 2913022398 \
+    -p ${N} \
+    --normalizeUsing CPM \
+    --filterRNAstrand reverse
+
+bamCoverage -b STAR/${lib}.bam \
+    -o STAR/${lib}_rev.bw \
+    --binSize 1 \
+    --effectiveGenomeSize 2913022398 \
+    -p ${N} \
+    --normalizeUsing CPM \
+    --filterRNAstrand forward
+
+conda deactivate
+
+
+##8a. Create fastq file from deduplicated bam file.
+
+module load bedtools
+
+bamToFastq -i STAR/${lib}.bam -fq STAR/${lib}.fastq
+
+
+##8b. Calculate transcript expression with salmon
+
+${salmon} quant \
+    -l A \
+    -r STAR/${lib}.fastq \
+    -p ${N} \
+    -i ${salmonINDEX} \
+    -o salmon/${lib}
