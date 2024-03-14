@@ -2,3 +2,5 @@
 .Rhistory
 .RData
 .Ruserdata
+accessories/GRCh38.primary_assembly.genome.2bit
+accessories/gencode.v26.primary_assembly.annotation.gtf
