@@ -29,22 +29,28 @@ library(viridis)
 
 ```{r}
 ## Summary of RMD contents
-#In this file I am running QC, setting threshold values, and plotting basic genes for the salmon quantified data. The data here is used in Figure 1 and Supplemental Figure 1.  
+#In this file I am running QC, setting threshold values, and plotting basic genes for the RNAseq salmon quantified data. The data here is used in Figure 1 and Supplemental Figure 1 as well as supporting data for other figures.  
 
-#1. Loading Files and Expression Data
-  #Loading of RiboCode and ORFquant data
-  #Reference Files needed
-  #Creating Txi file to get transcript expression data
+#1.Loading annotation files and metadata
 
-#2. Filtering Ribocode dataset
-  #Remove overlaps with annotated genes
-  #AA collapsing and saving final files
+#2. Creating Txi file
 
-#3. Filtering ORFquant dataset
-  #Remove overlaps with annotated genes
-  #AA collapsing and saving final files
+#3. QC data
+  #How many counts per library?
+  #PCA Analysis
 
+#4. Making datasets
+  #removing "blacklist" genes before making final expression calculations (ie snoRNA, miRNA, snRNA, rRNA, Mt_tRNA, scaRNA, Mt_tRNA, Mt_rRNA)
+  #Making TPM dataset
+  #Saving data
+
+#5. Plotting indivdual genes
+  #Create function to plot TPM for inputted gene
+  #Plot specific genes
 ```
+
+
+# 1.Loading annotation files and metadata
 
 
 ```{r get necessary files, echo=FALSE, warning = FALSE, include = FALSE}
@@ -69,10 +75,8 @@ nonpolyA <- readxl::read_xlsx(path = here::here("accessories","polyAminus.xlsx")
 
 #grabbing the metadata to make txi file.
 metadata <- readxl::read_xlsx(here::here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
-  filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
+  dplyr::filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
 
-#keeping only the beta cell data
-metadata <- metadata[18:23,]
 
 #simplifing the information
 metadata <- data.frame(
@@ -90,6 +94,9 @@ metadata$sample <- case_when(metadata$type=="ribo" ~ paste(metadata$sample,"_R2"
           T ~ metadata$sample)
 
 ```
+
+
+# 2. Creating Txi file
 
 
 ```{r create Txi, message=FALSE, echo=FALSE, warning=FALSE}
@@ -115,17 +122,18 @@ myTxi <- tximport(myquantfiles, type = "salmon", tx2gene = tx2gene)
 # hist(log2(rowSums(myTxi$counts[,1:6])), breaks = 30) + abline(v=8)
 keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,1:6])) > 8,])
 
+#need a full counts table to submit to GEO. 
 fullCountsTable <- myTxi$counts
-
 write.csv(as.data.frame(fullCountsTable), here("output", "fullCountsTable.csv"), row.names = TRUE)
 
 ```
 
 
-#Counts per library
+# 3. QC Data
 
 
 ```{r counts per library, message=FALSE, warning=FALSE, echo=FALSE}
+#Counts per library
 tmpCounts <- colSums(myTxi$counts) %>% as.data.frame() %>% rownames_to_column(var = "sample") %>% separate(data = ., col = sample, into = c("genotype","type","rep"), remove = F)
 
 colnames(tmpCounts)[5] <- "counts"
@@ -140,10 +148,9 @@ ggplot(data=tmpCounts, aes(x=sample, y=counts, fill=rep)) +
 ```
 
 
+```{r qc pca, echo=FALSE, warning = FALSE, message=FALSE, fig.height=4}
 ## PCA analysis
 
-
-```{r qc pca, echo=FALSE, warning = FALSE, message=FALSE, fig.height=4}
 qcinput <- log2(myTxi$abundance[keepGenes,3:6] + 1)
 pca_data <- prcomp(qcinput, center = T, scale. = T) 
 
@@ -181,15 +188,15 @@ qc_pca
 ```
 
 
-#Blacklist -> make sure keepgenes does not contain any blacklisted categories. 
+# 4. Making datasets
 
 
-```{r}
+```{r blacklist removal, echo=FALSE, message=FALSE, warning=FALSE}
 nonpolyA <- readxl::read_xlsx(path = here::here("accessories","polyAminus.xlsx"), sheet = 1) %>% 
    pull(Gene)
 
 nonpolyA_ID <- geneInfo %>%
-  filter(symbol %in% nonpolyA) %>% 
+  dplyr::filter(symbol %in% nonpolyA) %>% 
   pull(gene_id) %>% 
   unique()
 
@@ -199,7 +206,7 @@ blacklist_smRNA <- c("snoRNA","miRNA","snRNA","rRNA","Mt_tRNA","scaRNA","Mt_tRNA
 
 # there are 5,355 genes we want to exclude
 blacklist_smRNA_ID <-geneInfo %>%
-  filter(biotype %in% blacklist_smRNA) %>% 
+   dplyr::filter(biotype %in% blacklist_smRNA) %>% 
   pull(gene_id) %>% 
   unique()
 
@@ -208,16 +215,16 @@ genes_to_kill <- unique(c(blacklist_smRNA_ID,nonpolyA_ID))
 
 #getting a list to remove for TPM calculation
 genes_to_kill_tf <- as.data.frame(genes_to_kill)
-genes_to_kill_tf <- left_join(genes_to_kill_tf, tx2gene, by = c("genes_to_kill" = "gene_id")) %>% select(transcript_id) %>% unique()
+genes_to_kill_tf <- left_join(genes_to_kill_tf, tx2gene, by = c("genes_to_kill" = "gene_id")) %>% dplyr::select(transcript_id) %>% unique()
 
-#write_csv(as.data.frame(genes_to_kill_tf), here("output", "genesKill_T.csv"))
+#write_csv(as.data.frame(genes_to_kill_tf), here("output", "genesKill_T.csv")) #used this to filter my quant.sf files to the filteredquant.sf files used above. 
 
 
 allCounts <- myTxi$counts %>%
   as.data.frame() %>% 
   rownames_to_column(var = "gene") %>% 
-  filter(gene %in% keepGenes) %>%
-  filter(!gene %in% genes_to_kill) %>%
+  dplyr::filter(gene %in% keepGenes) %>%
+  dplyr::filter(!gene %in% genes_to_kill) %>%
   column_to_rownames(var = "gene") %>% 
   as.matrix() %>%
   round(.,0)
@@ -227,8 +234,6 @@ allCountsNorm <- edgeR::cpm(allCounts)
 
 ```
 
-
-# Making TPM dataset
 
 
 ```{r TPM data, message=FALSE, warning=FALSE, echo=FALSE}
@@ -240,8 +245,8 @@ txiTPM <- tximport(myquantfiles, type = 'salmon', tx2gene = tx2gene, dropInfReps
 allTPM <- txiTPM$abundance %>%
   as.data.frame() %>% 
   rownames_to_column(var = "gene") %>% 
-  filter(gene %in% keepGenes) %>%
-  filter(!gene %in% genes_to_kill) %>%
+  dplyr::filter(gene %in% keepGenes) %>%
+  dplyr::filter(!gene %in% genes_to_kill) %>%
   column_to_rownames(var = "gene") %>% 
   as.matrix()
 
@@ -253,18 +258,16 @@ tpms <- txiTPM_transcript$abundance[,1:6] %>%
 as.data.frame(.) %>%
 rownames_to_column(var = 'ensembl_transcript_id')
 
-tpms2 <- tpms %>% filter(rowSums(tpms[,2:7]) > 1)
+tpms2 <- tpms %>% dplyr::filter(rowSums(tpms[,2:7]) > 1)
 
 #hist(log10(rowSums(txiTPM_transcript$abundance[,1:6])), breaks = 30) + abline(v=log10(1), col = "red")
 
 ```
 
 
-
+```{r saving data, message=FALSE, warning=FALSE, echo=FALSE}
 # Saving Counts data so we don't rerun the cutoff values each time
 
-
-```{r saving data, message=FALSE, warning=FALSE, echo=FALSE}
 #This is the CPM normalized data (filtered to remove the blacklist items)
 #write_csv(as.data.frame(allCountsNorm) %>% rownames_to_column("gene_id"), here("output", "allCounts_CPMnorm.csv"))
 
@@ -278,13 +281,14 @@ tpms2 <- tpms %>% filter(rowSums(tpms[,2:7]) > 1)
 
 
 
-## Plotting indivdual genes
+# 5. Plotting indivdual genes
 
 
-```{r indivdual genes, message=FALSE, warning=FALSE, echo=FALSE}
-#creating a function
+```{r plot gene, echo=FALSE, warning=FALSE, message=FALSE}
+#creating a function to plot the TPM expression for a specific gene input
 plotgeneTPM <- function(tpms, goi) {
 
+conflicts_prefer(dplyr::filter)  
 mygene <- annotation %>% dplyr::filter(symbol== goi)
 tpmsGene <- tpms %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% dplyr::filter(ensembl_gene_id == mygene$gene)
 
@@ -320,9 +324,12 @@ ggplot(df2, aes(x=name, y=value)) +
     xlab("") +
     theme_minimal() + ggtitle(mygene$symbol) + stat_compare_means(aes(label = paste0("p.adj = ",..p.adj.., digits = 3)), label.x = 1.5, method = "t.test", paired = FALSE)
 }
+```
+
+
+```{r indivdual genes, message=FALSE, warning=FALSE, echo=FALSE}
 
 #Now creating plots
-
 p_INS <- plotgeneTPM(allCountsNorm, "INS")
 p_G6PC2 <- plotgeneTPM(allCountsNorm, "G6PC2")
 p_IAPP <- plotgeneTPM(allCountsNorm, "IAPP")
@@ -341,7 +348,7 @@ p_GenePlotsBcells <- plot_grid(p_INS  + theme(legend.position="none"),
                        p_GP2 + theme(legend.position="none"),
                                           nrow = 2)
 
-#ggsave(plot = p_GenePlotsBcells, filename = "/Users/kathrynwalters/Documents/RStudio Git Locations/2022_RibosomeProfilingsBCs/plots/GFPenrichment_cherryPicked.pdf", width = 8, height = 5, dpi = 320)
+#ggsave(plot = p_GenePlotsBcells, filename = here::here("plots", "Figure1", "GFPenrichment_cherryPicked.pdf"), width = 8, height = 5, dpi = 320)
 
 ```
 
