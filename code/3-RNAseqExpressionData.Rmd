@@ -1,0 +1,348 @@
+---
+title: "3-RNAseqExpressionData"
+author: "Kathryn Walters"
+date: "2023-05-08"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+``` {r setup, echo=FALSE, message = FALSE, warning = FALSE, include = F}
+library(here)
+library(tximport)
+library(tidyverse)
+library(pheatmap)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(ggrepel)
+library(ggpubr)
+library(DESeq2)
+library(dplyr)
+library(cowplot)
+library(viridis)
+
+# you will need to install all these packages before you can run this.
+```
+
+
+```{r}
+## Summary of RMD contents
+#In this file I am running QC, setting threshold values, and plotting basic genes for the salmon quantified data. The data here is used in Figure 1 and Supplemental Figure 1.  
+
+#1. Loading Files and Expression Data
+  #Loading of RiboCode and ORFquant data
+  #Reference Files needed
+  #Creating Txi file to get transcript expression data
+
+#2. Filtering Ribocode dataset
+  #Remove overlaps with annotated genes
+  #AA collapsing and saving final files
+
+#3. Filtering ORFquant dataset
+  #Remove overlaps with annotated genes
+  #AA collapsing and saving final files
+
+```
+
+
+```{r get necessary files, echo=FALSE, warning = FALSE, include = FALSE}
+#grabbing and creating necessary files
+geneInfo <- read_csv(here::here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+# create transcript-to-gene mapping
+tx2gene <- geneInfo[,c(2,1)]
+
+#gene symbols only
+gene_symbol <- geneInfo %>% dplyr::select(gene_id, symbol) %>% unique()
+
+#a list of genes that do not contain polyA tails. 
+nonpolyA <- readxl::read_xlsx(path = here::here("accessories","polyAminus.xlsx"), sheet = 1) %>% 
+  pull(Gene)
+
+#grabbing the metadata to make txi file.
+metadata <- readxl::read_xlsx(here::here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
+  filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
+
+#keeping only the beta cell data
+metadata <- metadata[18:23,]
+
+#simplifing the information
+metadata <- data.frame(
+  sample=metadata$SampleID, genotype = metadata$Genotype,
+  type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
+          T ~ "rna")),
+  rep=factor(case_when(metadata$Treatment2 == "RepA" ~ "A",
+                       T ~ "B")
+             )
+)
+
+metadata[1:2,2] <- "GFP+"
+#making sure the name is correct and will be able to access folder properly.
+metadata$sample <- case_when(metadata$type=="ribo" ~ paste(metadata$sample,"_R2",sep = ""),
+          T ~ metadata$sample)
+
+```
+
+
+```{r create Txi, message=FALSE, echo=FALSE, warning=FALSE}
+
+myquantfiles1 <- paste("data/",
+                      metadata$sample,
+                      "/filteredquant.sf",
+                      sep = "")
+
+myquantfiles2 <- paste("data/",
+                      metadata$sample,
+                      "/filteredquant.sf",
+                      sep = "")
+
+myquantfiles <- append(myquantfiles1[1:2], myquantfiles2[3:6])
+  
+names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep = "_")
+
+
+
+myTxi <- tximport(myquantfiles, type = "salmon", tx2gene = tx2gene)
+
+# hist(log2(rowSums(myTxi$counts[,1:6])), breaks = 30) + abline(v=8)
+keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,1:6])) > 8,])
+
+fullCountsTable <- myTxi$counts
+
+write.csv(as.data.frame(fullCountsTable), here("output", "fullCountsTable.csv"), row.names = TRUE)
+
+```
+
+
+#Counts per library
+
+
+```{r counts per library, message=FALSE, warning=FALSE, echo=FALSE}
+tmpCounts <- colSums(myTxi$counts) %>% as.data.frame() %>% rownames_to_column(var = "sample") %>% separate(data = ., col = sample, into = c("genotype","type","rep"), remove = F)
+
+colnames(tmpCounts)[5] <- "counts"
+
+
+ggplot(data=tmpCounts, aes(x=sample, y=counts, fill=rep)) +
+  scale_fill_brewer(palette="Paired") +
+  geom_bar(stat="identity",position=position_dodge()) +
+  xlab("") +
+  ggtitle("counts per lib") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+## PCA analysis
+
+
+```{r qc pca, echo=FALSE, warning = FALSE, message=FALSE, fig.height=4}
+qcinput <- log2(myTxi$abundance[keepGenes,3:6] + 1)
+pca_data <- prcomp(qcinput, center = T, scale. = T) 
+
+pca_data_info <- summary(pca_data) 
+
+# we make a dataframe out of the rotations and will use this to plot
+pca_plot_data <- data.frame(pca_data$rotation) 
+
+# create ID column populated by row names
+pca_plot_data$ID <- rownames(pca_plot_data)
+
+# separate names into three separate identifiers
+pca_plot_data <- pca_plot_data %>% separate(col = ID, sep = "_", into = c("sample","type","rep"))
+
+pca_plot_data$sample <- factor(pca_plot_data$sample)
+
+pca_plot_data$rep <- factor(pca_plot_data$rep)
+
+pca_plot_data$type <- factor(pca_plot_data$type)
+
+
+labelPosition <- pca_plot_data %>% group_by(sample,type,rep) %>% dplyr::select(PC1, PC2) %>% summarise(mPC1=mean(PC1), mPC2=mean(PC2))
+
+qc_pca <- ggplot(pca_plot_data, aes(x=PC1, y=PC2, color=type, shape=sample)) +
+  geom_point(size=2) + 
+  theme_classic() +
+  ggtitle("BetaCells - GFP Sorted RNAseq") +
+  scale_color_manual(values = viridis(n=3, end = .8)) +
+  xlab(paste("PC1 (%",100*round(pca_data_info$importance[2,1], digits = 3),")", sep = "")) +
+  ylab(paste("PC2 (%",100*round(pca_data_info$importance[2,2], digits = 3),")", sep = "")) 
+
+qc_pca
+
+#ggsave(plot = qc_pca, filename = here("plots", "qc_PCAplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+```
+
+
+#Blacklist -> make sure keepgenes does not contain any blacklisted categories. 
+
+
+```{r}
+nonpolyA <- readxl::read_xlsx(path = here::here("accessories","polyAminus.xlsx"), sheet = 1) %>% 
+   pull(Gene)
+
+nonpolyA_ID <- geneInfo %>%
+  filter(symbol %in% nonpolyA) %>% 
+  pull(gene_id) %>% 
+  unique()
+
+
+# we want to remove any genes that match these annotation categories # before we do DE analysis
+blacklist_smRNA <- c("snoRNA","miRNA","snRNA","rRNA","Mt_tRNA","scaRNA","Mt_tRNA","Mt_rRNA")
+
+# there are 5,355 genes we want to exclude
+blacklist_smRNA_ID <-geneInfo %>%
+  filter(biotype %in% blacklist_smRNA) %>% 
+  pull(gene_id) %>% 
+  unique()
+
+
+genes_to_kill <- unique(c(blacklist_smRNA_ID,nonpolyA_ID))
+
+#getting a list to remove for TPM calculation
+genes_to_kill_tf <- as.data.frame(genes_to_kill)
+genes_to_kill_tf <- left_join(genes_to_kill_tf, tx2gene, by = c("genes_to_kill" = "gene_id")) %>% select(transcript_id) %>% unique()
+
+#write_csv(as.data.frame(genes_to_kill_tf), here("output", "genesKill_T.csv"))
+
+
+allCounts <- myTxi$counts %>%
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene") %>% 
+  filter(gene %in% keepGenes) %>%
+  filter(!gene %in% genes_to_kill) %>%
+  column_to_rownames(var = "gene") %>% 
+  as.matrix() %>%
+  round(.,0)
+
+#creating a normalized dataset for use. 
+allCountsNorm <- edgeR::cpm(allCounts) 
+
+```
+
+
+# Making TPM dataset
+
+
+```{r TPM data, message=FALSE, warning=FALSE, echo=FALSE}
+#tximport can take salmon files and determine TPM
+txiTPM <- tximport(myquantfiles, type = 'salmon', tx2gene = tx2gene, dropInfReps = TRUE, countsFromAbundance = 'lengthScaledTPM') 
+
+#Making TPM into its own table in case that is needed. Includes GeneID. 
+
+allTPM <- txiTPM$abundance %>%
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene") %>% 
+  filter(gene %in% keepGenes) %>%
+  filter(!gene %in% genes_to_kill) %>%
+  column_to_rownames(var = "gene") %>% 
+  as.matrix()
+
+
+#making transcript level as well
+txiTPM_transcript <- tximport(myquantfiles, type = 'salmon', dropInfReps = TRUE, countsFromAbundance = 'lengthScaledTPM', txOut = TRUE) 
+
+tpms <- txiTPM_transcript$abundance[,1:6] %>%
+as.data.frame(.) %>%
+rownames_to_column(var = 'ensembl_transcript_id')
+
+tpms2 <- tpms %>% filter(rowSums(tpms[,2:7]) > 1)
+
+#hist(log10(rowSums(txiTPM_transcript$abundance[,1:6])), breaks = 30) + abline(v=log10(1), col = "red")
+
+```
+
+
+
+# Saving Counts data so we don't rerun the cutoff values each time
+
+
+```{r saving data, message=FALSE, warning=FALSE, echo=FALSE}
+#This is the CPM normalized data (filtered to remove the blacklist items)
+#write_csv(as.data.frame(allCountsNorm) %>% rownames_to_column("gene_id"), here("output", "allCounts_CPMnorm.csv"))
+
+#This is the TPM normalized data (filtered to remove the blacklist items)
+#write_csv(as.data.frame(allTPM) %>% rownames_to_column("gene_id"), here("output", "allCounts_TPMnorm.csv"))
+
+#This is raw counts (filtered to remove the blacklist items)
+#write_csv(as.data.frame(allCounts)%>% rownames_to_column("gene_id"), here("output", "allCounts.csv"))
+
+```
+
+
+
+## Plotting indivdual genes
+
+
+```{r indivdual genes, message=FALSE, warning=FALSE, echo=FALSE}
+#creating a function
+plotgeneTPM <- function(tpms, goi) {
+
+mygene <- annotation %>% dplyr::filter(symbol== goi)
+tpmsGene <- tpms %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% dplyr::filter(ensembl_gene_id == mygene$gene)
+
+tpmsGene <- pivot_longer(data = tpmsGene, cols = 2:7) %>% separate(col = "name", into = c("type", "exp", "rep"), sep = "_")
+tpmsGene <- unite(tpmsGene, col = "name", c("type", "exp"), sep = "_", remove = FALSE)
+
+tpmsGene$name <- factor(tpmsGene$name, levels=c("GFP+_ribo", "GFP+_rna", "GFP-_rna"))
+
+tpmsGene <- tpmsGene %>% filter(exp != "ribo")
+tpmsGene <- tpmsGene[c(1,2,6)]
+  
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+
+df2 <- data_summary(tpmsGene, varname="value", 
+                    groupnames=c("name"))
+head(df2)
+
+ggplot(df2, aes(x=name, y=value)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=value-sd, ymax=value+sd), width=.2,
+                 position=position_dodge(.9)) + ylab("CPM") +
+    xlab("") +
+    theme_minimal() + ggtitle(mygene$symbol) + stat_compare_means(aes(label = paste0("p.adj = ",..p.adj.., digits = 3)), label.x = 1.5, method = "t.test", paired = FALSE)
+}
+
+#Now creating plots
+
+p_INS <- plotgeneTPM(allCountsNorm, "INS")
+p_G6PC2 <- plotgeneTPM(allCountsNorm, "G6PC2")
+p_IAPP <- plotgeneTPM(allCountsNorm, "IAPP")
+
+p_KRT19 <- plotgeneTPM(allCountsNorm, "KRT19")
+p_SOX9 <- plotgeneTPM(allCountsNorm, "SOX9")
+p_GP2 <- plotgeneTPM(allCountsNorm, "GP2")
+p_TFEB <- plotgeneTPM(allCountsNorm, "TFEB")
+
+
+p_GenePlotsBcells <- plot_grid(p_INS  + theme(legend.position="none"),
+                       p_G6PC2  + theme(legend.position="none"),
+                       p_IAPP  + theme(legend.position="none"),
+                       p_KRT19 + theme(legend.position="none"),
+                       p_SOX9 + theme(legend.position="none"),
+                       p_GP2 + theme(legend.position="none"),
+                                          nrow = 2)
+
+#ggsave(plot = p_GenePlotsBcells, filename = "/Users/kathrynwalters/Documents/RStudio Git Locations/2022_RibosomeProfilingsBCs/plots/GFPenrichment_cherryPicked.pdf", width = 8, height = 5, dpi = 320)
+
+```
+
+
