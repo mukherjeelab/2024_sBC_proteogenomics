@@ -28,7 +28,7 @@ library(stringr)
 
 ```{r}
 ## Summary of RMD contents
-#In this file I am ... The data here is used in downstream analysis. 
+#In this file I am getting the nucleic acid sequences for all the ORFs called. Then I can use these sequences to determine codon bias, kozak sequence conservation, and FOP score. The data here is used in downstream analysis. 
 
 #1. Metadata for libraries
 
