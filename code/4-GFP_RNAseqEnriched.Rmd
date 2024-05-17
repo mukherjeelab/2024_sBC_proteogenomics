@@ -1,0 +1,152 @@
+---
+title: "4-GSEA Analysis GFP Enrichment"
+author: "Kathryn Walters"
+date: "2023-05-10"
+output: html_document
+---
+
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(readxl)
+library(tidyverse)
+library(here)
+library(ggplot2)
+library(ggpubr)
+library(clusterProfiler)
+```
+
+
+# Load Data
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+#grabbing and creating necessary files
+geneInfo <- read_csv(here::here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+#gene symbols only
+gene_symbol <- geneInfo %>% select(gene_id, symbol) %>% unique()
+
+#What datafiles do I need? 
+allCounts <- read_csv(here::here("output", "allCounts.csv"))
+
+metadata <- data.frame(genotype = c("GFPyes", "GFPyes","GFPyes","GFPno","GFPyes","GFPno"), type = c("ribo", "ribo", "rna", "rna", "rna", "rna"), rep = c("A", "B", "A", "A", "B", "B"))
+```
+
+
+# DESeq2 on GFP RNA-seq
+
+```{r DEseq, message=FALSE, warning=FALSE, echo=FALSE}
+#Goal here is to see what transcripts are different between the GFP +/- RNA-seq. The hypothesis is that the GFP+ is enriched for beta-cell transcripts. 
+
+metadata_rna <- metadata %>% filter(type == "rna")
+rna_counts <- allCounts[,c(1,4:7)] %>% column_to_rownames("gene_id")
+colnames(rna_counts) <- c("GFPyes_A", "GFPno_A", "GFPyes_B", "GFPno_B")
+
+ddsMat_rna <- DESeqDataSetFromMatrix(countData = rna_counts, colData = metadata_rna, design = ~genotype)
+ddsMat_rna <- DESeq(ddsMat_rna)
+
+res_rna <- results(ddsMat_rna, name=resultsNames(ddsMat_rna)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_rna <- lfcShrink(dds = ddsMat_rna, res = res_rna, coef = resultsNames(ddsMat_rna)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+#summarize the number of transcripts that meet our cutoffs for significant changes either up or down.
+sigGenes <- res_rna[which(res_rna$padj<0.05), ] %>%
+  as.data.frame %>%
+  plyr::mutate(rna=case_when(log2FoldChange > 0 ~ "higher GFP_positive",
+                      T ~ "lower GFP_negative")) %>% as.data.frame()
+
+sigGenes <- sigGenes[order(sigGenes$log2FoldChange),]
+
+write_csv(sigGenes, here("output", "GFPenrichedList.csv"))
+
+write_csv(as.data.frame(allCountsNorm) %>% rownames_to_column("gene_id"), here("output", "allCounts_CPMnorm.csv"))
+
+
+```
+
+
+```{r GSEA, message=FALSE, warning=FALSE, echo=FALSE}
+## We now have a ranked list of genes from the GFP sorted cells. I want to see if the hallmark for pancreas β cells (M5957, Hallmark) is enriched in the GFP positive group. 
+
+#Getting the ranked list of lfc
+DEgeneList <- res_rna %>% pull(log2FoldChange) #grabbing log2fold change for ALL genes (above threshold) in this experiment. 
+
+res_rna$symbol <- toupper(res_rna$symbol)
+names(DEgeneList) <- res_rna %>% pull(symbol)
+DEgeneList <- sort(DEgeneList, decreasing = TRUE) #need to be sorted by decreasing value. 
+
+pancreasHallmark <- readr::read_tsv("https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_PANCREAS_BETA_CELLS&fileType=grp")
+
+pancreasHallmark <- pancreasHallmark[-1,]
+pancreasHallmark$term <- "Term"
+pancreasHallmark <- pancreasHallmark[,c(2,1)]
+
+
+#running GSEA test
+set.seed(42)
+edo2 <- GSEA(geneList = DEgeneList, pAdjustMethod = "fdr", 
+               pvalueCutoff = 1,
+               minGSSize = 2,
+               maxGSSize = 4000,
+               TERM2GENE = pancreasHallmark)
+tmp2 <- edo2@result
+tmp2
+
+#writexl::write_xlsx(tmp2,  here("1_WTvKO", "output", "WTvKO_GSEAoverlapStats.xlsx")) #saving the list of GSEA values for this directed enrichment. 
+
+GSEAplotGeneSet <- gseaplot(edo2, geneSetID = 1, by = "runningScore", title = edo2$Description[1], color.line = "purple4")
+
+GSEAplotGeneSet
+
+ggsave(plot = GSEAplotGeneSet, filename = here("plots", "GFP_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+```
+
+```{r top DE genes,  message=FALSE, warning=FALSE, echo=FALSE}
+#use res_rna
+#use protein coding only
+#use only those with sig p.adj
+GFPenriched <- res_rna %>% filter(biotype == "protein_coding" & padj < 0.05) %>% arrange(log2FoldChange)
+#grab the top 40 
+GFPenrichedt40 <- GFPenriched[c(768:807),]
+
+#and bottom 25
+GFPenrichedB40 <- GFPenriched[c(1:40),]
+
+#make bar plot (consider log on y axis?)
+GFPt40_barPlot <- ggbarplot(GFPenrichedt40, x = "symbol", y = "log2FoldChange",
+          sort.val = "desc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "Log2FoldChange",
+          xlab = FALSE
+          )
+
+GFPt40_barPlot
+
+ggsave(plot = GFPt40_barPlot, filename = here::here("plots", "GFP40enriched_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+GFPB40_barPlot <- ggbarplot(GFPenrichedB40, x = "symbol", y = "log2FoldChange",
+          sort.val = "desc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "Log2FoldChange",
+          xlab = FALSE
+          )
+
+GFPB40_barPlot
+
+ggsave(plot = GFPB40_barPlot, filename = here::here("plots", "GFP40dep_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+```
+
+
+
