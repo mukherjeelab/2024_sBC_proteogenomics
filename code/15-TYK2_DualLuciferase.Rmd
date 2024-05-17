@@ -1,0 +1,272 @@
+---
+title: "KAB134_TYK2_DL"
+author: "Kathryn Walters"
+date: "2023-12-02"
+output: html_document
+---
+
+
+```{r setup, include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+library(here)
+library(drc) # modeling tools
+library(tidyverse) # your go to set of functions for messing w/data
+library(RColorBrewer) # to make color schemes
+#library(ggpubr) # publication quality ggplots ha ha ha
+library(ggthemes) # additional themes for ggplot-ing
+library(gridExtra) # allows arranging of plots (rows/columns...)
+library(splitstackshape)
+library(ggpubr)
+```
+
+
+## Experiment #1
+
+
+```{r files, include=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+# OD file
+OD <- read_csv(here("KAB134_TYK2UTR_DL", "KAB134_TYK2_DL1.csv"))
+
+#OD <- pivot_longer(OD, cols = c("Firefly", "NanoLuc"))
+#colnames(OD) <- c("Sample","Treatment","RLU")
+```
+
+
+```{r graph DL assay, include=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+df1<- as.data.frame(OD)
+#df1 <- pivot_wider(df1, values_from = c("RLU"), names_from = "Luc")
+df1$Nano_FF <- df1$NanoLuc/df1$Firefly
+
+#df1 <- separate(df1, col = "ID", into = c("UTR", "Cytokine", "Dose"), sep = "_")
+
+#df1$UTR <- factor(df1$UTR, levels = c("Syn", "Mut", "Lipo"))
+
+df1 <- df1[!df1$ID == "LipoCon",] 
+#df1 <- df1[!df1$UTR == "AGTRpk2",] 
+
+#df1 <- df1 %>% unite(col = "Sample", c("UTR", "Dox"))
+
+df1 <- as.data.frame(df1)
+df2 <- df1 %>%
+  group_by(ID) %>%
+  summarise( 
+    n=n(),
+    mean=mean(Nano_FF),
+    sd=sd(Nano_FF)
+  ) %>%
+  mutate( se=sd/sqrt(n))
+
+p_1 <- ggplot(df1, aes(x=ID, y=Nano_FF)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "",
+      subtitle = "",
+      y = "NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+p_1
+
+
+
+#normalizing
+
+df1b <- separate(df1, col = "ID", into = c("UTR", "Cytokine", "Dose"), sep = "_")
+
+df1b <- df1b %>% unite(col = "Sample", c("Cytokine", "Dose"))
+
+value <- mean(df1b$Nano_FF[df1b$UTR=="WT"])
+
+df1b <- df1b %>%
+group_by(UTR) %>%
+mutate(ctrl=Nano_FF/value*100)
+
+
+df2b <- df1b %>%
+  group_by(UTR, Sample) %>%
+  summarise( 
+    n=n(),
+    mean=mean(ctrl),
+    sd=sd(ctrl)
+  ) %>%
+  mutate( se=sd/sqrt(n))
+
+p_1b <- ggplot(df1b, aes(x=Sample, y=ctrl)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) + facet_grid(~UTR) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "",
+      subtitle = "",
+      y = "Dox Normalized NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+p_1b
+
+
+OD2 <- read_csv(here("KAB134_TYK2UTR_DL", "KAB134_TYK2_DL1_reps.csv"))
+df2<- as.data.frame(OD2)
+df2$Nano_FF <- df2$NanoLuc/df2$Firefly
+df2 <- df2[!df2$ID == "LipoCon",] 
+
+df1c <- separate(df2, col = "ID", into = c("UTR", "Cytokine", "Dose", "Rep"), sep = "_", remove = T)
+
+df1c <- df1c %>% unite(col = "Sample", c("Cytokine", "Dose", "Rep"))
+
+df1c <- df1c[,c(1,2,5)]
+
+df1c <- pivot_wider(df1c, names_from = UTR, values_from = Nano_FF)
+
+df1c$WTnorm <- df1c$Mut/df1c$WT
+
+df1c <- separate(df1c, col = "Sample", into = c("Cytokine", "Dose", "Rep"), sep = "_", remove = T)
+df1c <- df1c %>% unite(col = "Sample", c("Cytokine", "Dose"))
+
+df2c <- df1c %>%
+group_by(Sample) %>%
+  summarise( 
+    n=n(),
+    mean=mean(WTnorm),
+    sd=sd(WTnorm)
+  ) %>%
+  mutate( se=sd/sqrt(n))
+
+
+ggplot(df1c, aes(x=Sample, y=WTnorm)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+ labs(title = "",
+      subtitle = "",
+      y = "WT Normalized NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+
+```
+
+
+
+## Experiment #2
+
+
+```{r files, include=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+# OD file
+OD3 <- read_csv(here("KAB134_TYK2UTR_DL", "KAB134_TYK2_DL2.csv"))
+
+#OD <- pivot_longer(OD, cols = c("Firefly", "NanoLuc"))
+#colnames(OD) <- c("Sample","Treatment","RLU")
+```
+
+
+```{r graph DL assay, include=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+df3<- as.data.frame(OD3)
+
+df3$Nano_FF <- df3$NanoGlo/df3$Firefly
+df3 <- df3[!df3$ID == "LipoCon",] 
+
+df3a <- pivot_longer(df3, cols = 2:3, names_to = "Luc", values_to = "RLU")
+
+
+ggplot(df3a %>% filter(Luc == "Firefly"), aes(x=ID, y=RLU)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + ylab("Firefly")
+
+ggplot(df3a %>% filter(Luc == "NanoGlo"), aes(x=ID, y=RLU)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + ylab("NanoGlo")
+
+
+#df1 <- separate(df1, col = "ID", into = c("UTR", "Cytokine", "Dose"), sep = "_")
+
+#df1$UTR <- factor(df1$UTR, levels = c("Syn", "Mut", "Lipo"))
+
+
+#df1 <- df1[!df1$UTR == "AGTRpk2",] 
+
+#df1 <- df1 %>% unite(col = "Sample", c("UTR", "Dox"))
+
+df4 <- df3 %>%
+  group_by(ID) %>%
+  summarise( 
+    n=n(),
+    mean=mean(Nano_FF),
+    sd=sd(Nano_FF)
+  ) %>%
+  mutate( se=sd/sqrt(n))
+
+p_1 <- ggplot(df3, aes(x=ID, y=Nano_FF)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "",
+      subtitle = "",
+      y = "NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+p_1
+
+
+df3b <- separate(df3, col = "ID", into = c("UTR", "Rep"), sep = "_", remove = T)
+
+
+ggplot(df3b, aes(x=UTR, y=Nano_FF)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color="red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+ labs(title = "",
+      subtitle = "",
+      y = "WT Normalized NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+value2 <- mean(df3b$Nano_FF[df3b$UTR=="WT"])
+
+df3b <- df3b %>%
+group_by(UTR) %>%
+mutate(ctrl=Nano_FF/value2*100)
+```
+
+
+#combine experiments
+
+```{r}
+#dataframe from Exp. 1
+df1b$exp <- 1
+df1b <- df1b %>% filter(Sample == "None_NA")
+df1b <- df1b[, c(1,5:7)]
+
+#dataframe from Exp. 2
+df3b$exp <- 2
+df3b <- df3b[, c(1,5:7)]
+
+#combine
+data_all <- rbind(df1b, df3b)
+
+
+data_all$exp <- as.factor(data_all$exp)
+
+data_all$UTR <- factor(data_all$UTR, levels = c("WT", "Mut"))
+
+ggplot(data_all, aes(x=UTR, y=ctrl)) + 
+    geom_dotplot(binaxis='y', stackdir='center') + theme_minimal() + stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="errorbar", color="red", width=0.2) +
+  stat_summary(fun.y=mean, geom="point", color = "red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+ labs(title = "",
+      subtitle = "",
+      y = "WT Normalized NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+
+p_LucBoxPlot <- ggplot(data_all, aes(x=UTR, y=ctrl)) + 
+    geom_boxplot(binaxis='y', stackdir='center', outlier.shape = NA) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+ labs(title = "",
+      subtitle = "",
+      y = "WT Normalized NanoLUC:FireflyLUC Ratio",
+      x = "")
+
+
+ggsave(plot = p_LucBoxPlot, filename = here("KAB134_TYK2UTR_DL", "LucBoxPlot.pdf"), height = 5, width = 4)
+
+WT_mean <- data_all %>% filter(UTR == "WT") %>% pull(ctrl)
+Mut_mean <- data_all %>% filter(UTR == "Mut") %>% pull(ctrl)
+
+t.test(WT_mean, Mut_mean, var.equal = TRUE)
+
+```
+
