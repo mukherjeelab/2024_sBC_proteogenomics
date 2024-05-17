@@ -50,10 +50,10 @@ library(tibble)
 #Loading of RiboCode and ORFquant data
 
 #ribocode program output
-ribocode <- read.table(here("ORFcallingFiles", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), sep = '\t', header = TRUE)
+ribocode <- read.table(here("input", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), sep = '\t', header = TRUE)
 
 #ORFquant program output is an Rdata file and so you have to load the file and then extract the dataframe that you need from all the others. 
-load(here("ORFcallingFiles", "Output from ORFcalling Software", "Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
+load(here("input", "Output from ORFcalling Software", "Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
 
 #pulling relevant information from Rdata file and making into dataframe.
 orfquant_minimal <- data.frame(
