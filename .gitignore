@@ -13,4 +13,5 @@ input/Betacell_mergedBamsSorted.sortedByCoord.out.bam
 .DS_Store
 accessories/.DS_Store
 
-accessories/txdb.gencode26.sqlite #needed in RMD 5
+#needed in RMD 5
+accessories/txdb.gencode26.sqlite 
