@@ -25,7 +25,7 @@ library(readxl)
 
 ```{r}
 ## Summary of RMD contents
-#In this file I am characterizing the nuORFs that were identified. For all of the listed categories below, I look at the trends faceted by program (in case there was program dependency), but then finally just as a whole group of ORFs as program didn't seem to make a difference for any category. The data here is used in Figure 3 and Supplementary Figure 3. 
+#In this file I am determining if the anno ORFs and nuORFs we identified are also found in Human islet proteomics data. The plots here are used in Figure 4 and Supplementary Figure 4. 
 
 #1. Loading Data
 
