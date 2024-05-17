@@ -1,5 +1,5 @@
 ---
-title: "14a-GettingNAseqs"
+title: "11-GettingNAseqs"
 author: "Kathryn Walters"
 date: "2023-08-01"
 output: html_document
@@ -23,20 +23,34 @@ library(readxl)
 library(BSgenome.Hsapiens.UCSC.hg38)
 library(seqinr)
 library(stringr)
-# library(conflicted)
-# 
-# conflict_prefer("here", "here")
-# conflict_prefer("filter", "dplyr")
 ```
+
+
+```{r}
+## Summary of RMD contents
+#In this file I am ... The data here is used in downstream analysis. 
+
+#1. Metadata for libraries
+
+#2. Loading datasets
+
+#3. Creating functions to get NA sequences
+
+#4.  Determining Sequences for Top 20% of High TE genes
+
+#5. Getting NA seqs for Ribocode data
+
+#6. Getting NA seqs for ORFquant data
+
+```
+
+
+#1. Metadata for libraries
 
 
 ```{r message=FALSE, warning=FALSE}
 #grabbing the metadata to make txi file.
-metadata <- readxl::read_xlsx(here::here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
-  filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
-
-#keeping only the beta cell data
-metadata <- metadata[18:23,]
+metadata <- readxl::read_xlsx(here::here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>% filter(Index_1_i7!="PooledLibraries")
 
 #simplifing the information
 metadata <- data.frame(
@@ -69,8 +83,11 @@ names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep
 ```
 
 
+# 2. Loading datasets
+
+
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
-AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics.xlsx"))
+AllORFs <- read_csv(here("output", "GeneCollapsedORFs_AllPrograms.csv"))
 
 geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
 colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
@@ -80,19 +97,29 @@ tx2gene <- geneInfo[,c(2,1)]
 ```
 
 
-```{r functions}
+# 3. Creating functions to get NA sequences
+
+
+```{r functions to extract sequences, message=FALSE, warning=FALSE, echo=FALSE}
+
+#first need to grab the sequence for each gene in gencode fasta file
 sequences <- readDNAStringSet(here("accessories", "gencode.v26.transcripts.fa.gz"))
 
+#make the sequences into a dataframe for easier to work with.
 df <- data.frame(
   Name = names(sequences),
   Sequence = as.character(sequences),
   stringsAsFactors = FALSE
 )
 
-# Split the column based on "|"
+# Split the column based on "|" to get the geneID information
 df <- separate(df, Name, into = paste0("element", 1:8), sep = "\\|", extra = "drop")
 
 
+
+#now we can create functions to extract the sequences we want. 
+
+#first, one to get the full NA sequence for a given transcript. 
 getNAseq <- function(transcriptID, start_position, end_position) {
 
 specific_row_text <- df %>%
@@ -107,6 +134,7 @@ return(specific_row_text)
 }
 
 
+#now we want to get just the kozak sequence for a given transcript ID
 getKozakseq <- function(transcriptID, start_position) {
 
 tStart <- start_position - 6
@@ -124,7 +152,11 @@ return(specific_row_text)
 }
 ```
 
-```{r}
+
+# 4. Determining Sequences for Top 20% of High TE genes
+
+
+```{r optimal codons, message=FALSE, warning=FALSE, echo=FALSE}
 #Optimal codons were chosen to be the codons with maximum occurrences for each amino acid in highly expressed genes (20% of the genes with the highest PA). -Got that from this paper:
 #https://www.sciencedirect.com/science/article/pii/S2001037021001549#b0195
 #Since this is part of the codon bias calculation, I need to get amino acid sequences for these as well. 
@@ -147,7 +179,7 @@ myTxiTX <- tximport(files = myquantfiles, type = "salmon", tx2gene = tx2gene, tx
 mytranscripts <- myTxiTX$abundance %>% as.data.frame() %>%
   rownames_to_column(var = "transcript_id")
 
-mytranscripts <- mytranscripts[,-c(5,7)]
+mytranscripts <- mytranscripts[,-c(5,7)] #getting rid of -GFP samples
 
 #adding the geneID for each transcript
 mytranscripts <-  left_join(mytranscripts, tx2gene, by=c("transcript_id" = "transcript_id")) 
@@ -191,13 +223,15 @@ TEdata$tCodon1 <- as.integer(TEdata$tCodon1)
 TEdata <- TEdata %>%
   mutate(Kozak_sequence = mapply(getKozakseq, element1, tCodon1))
 
-write.csv(TEdata, here("NAseqs", "Top20TE_NAseqs.csv"))
+write_csv(TEdata, here("output", "Top20TE_NAseqs.csv"))
 
 ```
 
 
+# 5. Getting NA seqs for Ribocode Data
+
 ```{r Ribocode, message=FALSE, warning=FALSE}
-Ribocode <- read.table(here("ORFcalling", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), header = TRUE, sep = "\t")
+Ribocode <- read.table(here("input", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), header = TRUE, sep = "\t")
 
 #keep only the Ribocode data that made the filtering process
 Ribocode <- Ribocode %>% filter(ORF_ID %in% AllORFs$ORF_ID)
@@ -213,20 +247,31 @@ Ribocode <- Ribocode %>%
 Ribocode <- Ribocode %>%
   mutate(Kozak_sequence = mapply(getKozakseq, transcript_id, ORF_tstart))
 
-write.csv(Ribocode, here("NAseqs", "Ribocode_NAseqs.csv"))
+write_csv(Ribocode, here("output", "Ribocode_NAseqs.csv"))
 ```
 
 
+# 6. Getting NA seqs for ORFquant data
+
 
 ```{r ORFquant, warning=FALSE, message=FALSE}
-ORFquant <- read_csv(here("ORFcalling", "Output from ORFcalling Software", "ORFquantExtracted.csv"))
+#ORFquant program output is an Rdata file and so you have to load the file and then extract the dataframe that you need from all the others. 
+load(here("input", "Output from ORFcalling Software", "Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
+
+#pulling relevant information from Rdata file and making into dataframe.
+ORFquant <- data.frame(
+id = ORFquant_results$ORFs_tx$ORF_id_tr,
+AA = ORFquant_results$ORFs_tx$Protein,
+annotation = ORFquant_results$ORFs_tx$ORF_category_Tx,
+gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_tx$transcript_id, transcriptType = ORFquant_results$ORFs_tx$transcript_biotype, annotationII = ORFquant_results$ORFs_tx$ORF_category_Tx
+)
 
 #Need to switch the ORF ID from transcripts to genes for ORFquant
 ORFquant <- ORFquant %>% separate(col = "id", into = c("transcript_id", "first", "second"), sep = "_", remove = TRUE) 
 
  ORFquant <- ORFquant %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE)
  
-#keep only the Ribocode data that made the filtering process
+#keep only the ORFquant data that made the filtering process
 ORFquant <- ORFquant %>% filter(ORF_ID %in% AllORFs$ORF_ID)
 
 #apply the function to every row of Ribocode and add the output as a new column.
@@ -241,7 +286,7 @@ ORFquant <- ORFquant %>%
   mutate(Kozak_sequence = mapply(getKozakseq, transcript_id, first))
 
 
-write.csv(ORFquant, here("NAseqs", "ORFquant_NAseqs.csv"))
+write_csv(ORFquant, here("output", "ORFquant_NAseqs.csv"))
 
 ```
 
