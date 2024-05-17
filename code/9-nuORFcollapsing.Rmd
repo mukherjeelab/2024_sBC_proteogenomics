@@ -169,6 +169,8 @@ allproteomics <- rbind(proteomicsRC, proteomicsOQ)
 AllORFs <- AllORFs %>% dplyr::mutate(protein = case_when(ORF_ID %in% allproteomics$ORF_ID ~ 'Yes', !(ORF_ID %in% allproteomics$ORF_ID) ~ 'No'))
 AllORFs$protein %>% table()
 
+writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered.xlsx"))
+
 tableProteomicSupport <- AllORFs %>% group_by(ORF_type, program) %>% select(protein) %>% table() %>% as.data.frame()
 
 tableProteomicSupport$ORF_type <- factor(tableProteomicSupport$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
