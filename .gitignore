@@ -16,5 +16,6 @@ accessories/.DS_Store
 #needed in RMD 5
 accessories/txdb.gencode26.sqlite 
 
-#bam files too large for github. Can use the rnaPipe.bsub script to generate these bams for yourself locally. Used in RMD 5.
+#bam files too large for github. Can use the rnaPipe.bsub and mergeBams script to generate these bams for yourself locally. Used in RMD 5.
 data/bam/*
+
