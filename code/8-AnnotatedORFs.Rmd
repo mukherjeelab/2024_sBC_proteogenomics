@@ -106,7 +106,7 @@ p_anno_proteoSupport_count
 # 3. Using VennDiagram to determine overlap in annotated ORFs called
 
 
-```{r Overlap between programs}
+```{r Overlap between programs, message=FALSE, warning=FALSE}
 #grabbing geneIDs associated with each program's already filtered annotated genes.
 set1 <- as.matrix(RC_anno)[,4]
 set3 <- as.matrix(OQ_anno)[,4]
