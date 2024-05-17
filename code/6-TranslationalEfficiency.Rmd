@@ -19,11 +19,25 @@ library(ggVennDiagram)
 library(scales)
 library(ggthemes)
 library(preprocessCore)
-
-
-#conflicts_prefer(plyr::mutate)
+library(dplyr)
 ```
 
+
+```{r}
+## Summary of RMD contents
+#In this file I am calculating the translational efficiency (Ribosomal Footprint reads/ Total RNA reads). I'm then using these values to characterize the cell lines used and find that they align with what would be expected for insulin producing beta cells. The data here is used in Figure 2.
+
+#1. Loading annotation files and metadata
+
+#2. Calculating TE 
+
+#3. GSEA for enriched TE genes
+
+#4. Function/Code to Visualize TE for Specific Genes
+```
+
+
+#1. Loading annotation files and metadata
 
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
@@ -38,13 +52,15 @@ annotation <- geneInfo %>%
   as.data.frame() # convert into dataframe
 
 #gene symbols only
-gene_symbol <- geneInfo %>% select(gene_id, symbol) %>% unique()
+gene_symbol <- geneInfo %>% dplyr::select(gene_id, symbol) %>% unique()
 
 #What datafiles do I need? TPM normalized to calculate TE
 allCountsCPM <- read_csv(here::here("output", "allCounts_CPMnorm.csv"))
 allCountsTPM <- read_csv(here::here("output", "allCounts_TPMnorm.csv"))
 ```
 
+
+# 2.Calculating and plotting TE 
 
 
 ```{r calculate TE, message=FALSE, warning=FALSE, echo=FALSE}
@@ -57,7 +73,7 @@ TEdata$meanRNA <- rowMeans(TEdata[ , c(4,5)] )
 
 TE_norm <- TEdata[,c(1,6,7)] %>% column_to_rownames("gene_id")
 
-TE_norm <- as.data.frame(normalize.quantiles(as.matrix(TE_norm)))
+TE_norm <- as.data.frame(normalize.quantiles(as.matrix(TE_norm))) #normalizing the data
 TE_norm <- cbind(TEdata[,1], TE_norm)
 colnames(TE_norm) <- c("gene_id", "NormMeanRibo", "NormMeanRNA")
 
@@ -66,19 +82,21 @@ TE_norm$TE <- TE_norm$NormMeanRibo/TE_norm$NormMeanRNA
 TEdata <- left_join(TEdata, TE_norm)
 TEdata$log10_TE <- (log10(TEdata$TE))
 
+#removing any infinite values
 TEdata <- TEdata[!is.infinite(abs(rowSums(TEdata[,10]))), ]
 
 TEdata <- left_join(TEdata, geneInfo) #%>% filter(biotype == "protein_coding")
 
 #writexl::write_xlsx(TEdata,  here("output", "TPM_TEdata.xlsx")) #saving the list of GSEA values for this directed enrichment. 
 
+#want to be able to compare the TE of all genes to those of specific biotypes. The expectation is that lincRNAs will have a lower TE since they are not traditionally translated. 
 TEdata2 <- TEdata %>%
   mutate(BiotypeII = case_when(biotype == 'lincRNA' ~ as.character(biotype), biotype == 'protein_coding' ~ as.character(biotype), .default = 'other'))
 
 TEdata2$BiotypeII <- factor(TEdata2$BiotypeII, levels = c("other", "lincRNA","protein_coding"))
 
 TEviolinDensity <- ggviolin(data = TEdata2 %>% filter(BiotypeII != "other"), x = "BiotypeII", y = "TE", trim = F, add=c("mean")) +
-  ylab("log10(riboTPM/rnaTPM)") +
+  ylab("Normalized TE") +
   xlab("") +
   scale_y_continuous(trans="log10",
     breaks = trans_breaks("log10", function(x) 10^x),
@@ -94,37 +112,14 @@ TEdata2 %>% filter(BiotypeII != "other") %>% group_by(BiotypeII) %>% summarise(m
 
 statsData <- TEdata2 %>% filter(BiotypeII != "other")
 
-t.test(statsData %>% filter(BiotypeII == "protein_coding") %>% select(log10_TE), statsData %>% filter(BiotypeII == "lincRNA") %>% select(log10_TE), alternative = "greater", var.equal = FALSE)
+t.test(statsData %>% filter(BiotypeII == "protein_coding") %>% dplyr::select(log10_TE), statsData %>% filter(BiotypeII == "lincRNA") %>% dplyr::select(log10_TE), alternative = "greater", var.equal = FALSE)
 
-( 0.269622/ 0.071413)
-
-.270*.75
-
-(-1.937868 + 2.678541)/ -2.678541
-
-#ggsave(plot = TEviolinDensity, filename = here::here("plots", "TE_violinDensity.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
+ggsave(plot = TEviolinDensity, filename = here::here("plots", "Figure2", "Fig2C_TE_violinDensity.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
 
 ```
 
 
-```{r}
-#basic plot not labeled at all
-p_TEscatter <- ggplot(TEdata2 %>% filter(biotype == "protein_coding"), aes(x = log10(meanRNA), y = log10(meanRibo))) + geom_point() + theme_minimal() + geom_abline(intercept = 0, slope = 1, color = "red")
-
-p_TEscatter
-
-#ggsave(plot = p_TEscatter, filename = here::here("plots", "TE_scatterPlot.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
-
-
-TEscatter <- TEdata2 %>%
-  mutate(TEcolor = case_when(log10_TE < -1 ~ "red", log10_TE > 1 ~ "blue", .default = 'grey'))
-
-#scatterplot showing > and < log10(TE) of 1. 
-ggplot(TEscatter %>% filter(biotype == "protein_coding"), aes(x = log10(meanRNA), y = log10(meanRibo))) + geom_point(aes(colour = TEcolor)) + theme_minimal() + geom_abline(intercept = 0, slope = 1, color = "black") + scale_color_manual(values=c("blue", "grey", "red"))
-
-
-```
-
+# 3. GSEA for enriched TE genes
 
 
 ```{r exploratory GSEA, message=FALSE, warning=FALSE, echo=FALSE}
@@ -183,130 +178,17 @@ plotGSEAexplore <- KEGG_Genes %>%
 
 plotGSEAexplore
 
-#ggsave(plot = plotGSEAexplore, filename = here::here("plots", "TE_GSEAPlotexplore.pdf"), device = "pdf", units = "in", width = 8, height = 5, dpi = 320)
-
-
-pancreasHallmark <- readr::read_tsv("https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_PANCREAS_BETA_CELLS&fileType=grp")
-
-pancreasHallmark <- pancreasHallmark[-1,]
-pancreasHallmark$term <- "Hallmark Pancreas Beta Cell"
-pancreasHallmark <- pancreasHallmark[,c(2,1)]
-
-
-#running GSEA test
-set.seed(42)
-edo2 <- GSEA(geneList = DEgeneList, pAdjustMethod = "fdr", 
-               pvalueCutoff = 1,
-               minGSSize = 2,
-               maxGSSize = 4000,
-               TERM2GENE = pancreasHallmark)
-tmp2 <- edo2@result
-tmp2
-
-#writexl::write_xlsx(tmp2,  here("1_WTvKO", "output", "WTvKO_GSEAoverlapStats.xlsx")) #saving the list of GSEA values for this directed enrichment. 
-
-GSEAplotGeneSet <- gseaplot(edo2, geneSetID = 1, by = "runningScore", title = edo2$Description[1], color.line = "black")
-
-GSEAplotGeneSet
-
-#ggsave(plot = GSEAplotGeneSet, filename = here("plots", "TE_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
-```
-
-
-
-#back to the scatter plot, now color coding based on the GSEA KEGG results
-
-```{r scatter GSEA color, message=FALSE, warning=FALSE, echo=FALSE}
-
-k_ant <- KEGG_Genes %>% filter(ID == "ANTIGEN_PROCESSING_AND_PRESENTATION") %>% pull(core_enrichment, ID) %>% as.data.frame()
-k_ant <- k_ant %>% as.data.frame() %>% separate(col = ".", into = c("A","B","C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II", "JJ"), sep = "/")
-k_ant <- k_ant %>% pivot_longer(cols = 1:36) %>% na.omit()
-k_ant$name <- "AntigenProcessing_T1D"
-
-k_citrate <- KEGG_Genes %>% filter(ID == "CITRATE_CYCLE_TCA_CYCLE") %>% pull(core_enrichment, ID) %>% as.data.frame()
-k_citrate <- k_citrate %>% as.data.frame() %>% separate(col = ".", into = c("A","B","C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"), sep = "/")
-k_citrate <- k_citrate %>% pivot_longer(cols = 1:24) %>% na.omit()
-k_citrate$name <- "Citrate_Glyco"
-
-k_glyco <- KEGG_Genes %>% filter(ID == "GLYCOLYSIS_GLUCONEOGENESIS") %>% pull(core_enrichment, ID) %>% as.data.frame()
-k_glyco <- k_glyco %>% as.data.frame() %>% separate(col = ".", into = c("A","B","C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"), sep = "/")
-k_glyco <- k_glyco %>% pivot_longer(cols = 1:24) %>% na.omit()
-k_glyco$name <- "Citrate_Glyco"
-
-k_oxPhos <- KEGG_Genes %>% filter(ID == "OXIDATIVE_PHOSPHORYLATION") %>% pull(core_enrichment, ID) %>% as.data.frame()
-k_oxPhos <- k_oxPhos %>% as.data.frame() %>% separate(col = ".", into = c("A","B","C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"), sep = "/")
-k_oxPhos <- k_oxPhos %>% pivot_longer(cols = 1:24) %>% na.omit()
-k_oxPhos$name <- "OxPhos"
-
-
-
-
-k_ECM <- KEGG_Genes %>% filter(ID == "ECM_RECEPTOR_INTERACTION") %>% pull(core_enrichment, ID) %>% as.data.frame()
-k_ECM <- k_ECM %>% as.data.frame() %>% separate(col = ".", into = c("A","B","C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"), sep = "/")
-k_ECM <- k_ECM %>% pivot_longer(cols = 1:24) %>% na.omit()
-k_ECM$name <- "ECM_Receptor"
-
-k_all <- rbind(k_T1D, k_ant, k_citrate, k_glyco, k_oxPhos) %>% unique()
-k_anti_n_T1D <- rbind(k_T1D, k_ant) %>% unique()
-k_citrate_n_glyco <- rbind(k_citrate, k_glyco) %>% unique()
-
-TEscatter <- TEscatter %>% filter(biotype == "protein_coding")
-TEscatter <- TEscatter %>%
-  mutate(TEgeneList = case_when(symbol %in% k_anti_n_T1D$value ~ 'Antigen_N_T1D', symbol %in% k_citrate_n_glyco$value ~ 'Citrate_n_Glyco', symbol %in% k_oxPhos$value ~ 'OxPhos', symbol %in% k_ECM$value ~ 'ECM_Receptor', .default = 'no'))
-
-#scatterplot showing the GSEA groups highlighted 
-ggplot(TEscatter %>% filter(biotype == "protein_coding"), aes(x = log10(meanRNA), y = log10(meanRibo))) + geom_point(aes(colour = TEgeneList), size = 0.5) + theme_minimal() + geom_abline(intercept = 0, slope = 1, color = "black") + scale_color_manual(values=c("red", "blue", "darkgreen", "grey","orange"))
-
-ggplot(TEscatter %>% filter(biotype == "protein_coding") %>% filter(TEgeneList != "no"), aes(x = log10(meanRNA), y = log10(meanRibo))) + geom_point(aes(colour = TEgeneList), size = 0.5) + theme_minimal() + geom_abline(intercept = 0, slope = 1, color = "black") + scale_color_manual(values=c("red", "blue", "darkgreen", "orange"))
+ggsave(plot = plotGSEAexplore, filename = here::here("plots", "Figure2", "Fig2D_TE_GSEAPlotexplore.pdf"), device = "pdf", units = "in", width = 8, height = 5, dpi = 320)
 
 ```
 
 
-```{r}
-#we decided just to do a violin plot with antigen presenting and ECM genes and their TE vs all protein_coding. 
-
-antigenPresenting <- readr::read_tsv("https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=KEGG_ANTIGEN_PROCESSING_AND_PRESENTATION&fileType=grp")
-antigenPresenting <- antigenPresenting[-c(1),]
-
-ECM <- readr::read_tsv("https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=KEGG_ECM_RECEPTOR_INTERACTION&fileType=grp")
-ECM <- ECM[-c(1),]
-
-
-
-TEscatter <- TEscatter %>%
-  mutate(violin = case_when(symbol %in% antigenPresenting$KEGG_ANTIGEN_PROCESSING_AND_PRESENTATION ~ "AntigenPresenting", symbol %in% ECM$KEGG_ECM_RECEPTOR_INTERACTION ~ "ECM_Interaction", .default = 'other'))
-
-TEscatter$violin <- factor(TEscatter$violin, levels = c("other", "ECM_Interaction", "AntigenPresenting"))
-
-TEscatter <- TEscatter %>% filter(log10_TE > -10) 
-
-TEviolinDensity_GSEA <- ggviolin(data = TEscatter, x = "violin", y = "TE", trim = F, add=c("mean")) +
-  ylab("log10(riboTPM/rnaTPM)") +
-  xlab("") +
-  scale_y_continuous(trans="log10",
-    breaks = trans_breaks("log10", function(x) 10^x),
-    labels = trans_format("log10", math_format(10^.x)), limits = c(.00001,100)) +
-  annotation_logticks(sides = "l") +
-  theme_minimal()
-
-ggsave(plot = TEviolinDensity_GSEA, filename = here::here("plots", "TE_violinDensity_GSEA.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
-
-#Add stats - parametric one-way anova
-
-
-# Compute the analysis of variance
-res.aov <- aov(log10_TE ~ violin, data = TEscatter)
-# Summary of the analysis
-summary(res.aov)
-
-#As the ANOVA test is significant, we can compute Tukey HSD (Tukey Honest Significant Differences, R function: TukeyHSD()) for performing multiple pairwise-comparison between the means of groups.
-TukeyHSD(res.aov)
-
-```
-
+# 4. Function/Code to Visualize TE for Specific Genes
 
 
 ```{r specific TE genes, message=FALSE, warning=FALSE}
+#This was not used for the publication but is useful for those wanting to visualize specific genes. 
+
 #creating a function
 plotgeneTPM <- function(tpms, goi) {
 
@@ -346,8 +228,7 @@ p_GenePlotsBcells <- plot_grid(p_INS  + theme(legend.position="none"),
                         p_GCG  + theme(legend.position="none"),
                                           nrow = 1)
 
-#ggsave(filename = here("plots","TE_cherryPicked.pdf"), plot = p_GenePlotsBcells, width = 6, height = 3)
-
+p_GenePlotsBcells
 
 ```
 
