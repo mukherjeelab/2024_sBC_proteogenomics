@@ -16,7 +16,7 @@ library(dplyr)
 
 ```{r}
 ## Summary of RMD contents
-#In this file my goal is to combine the ORFs called by Ribocode and ORFquant into one dataset. I will use gffcompare to compare them and filter from there. gffCompare was run on command line and the files are available in the accessories folder. The data here is used in Figure 2.
+#In this file my goal is to combine the ORFs called by Ribocode and ORFquant into one dataset. I will use gffcompare to compare them and filter from there. gffCompare was run on command line and the files are available in the accessories folder. The data here is used in downstream RMD files and analysis.
 
 #1. Loading data
 
