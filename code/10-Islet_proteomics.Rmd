@@ -1,5 +1,5 @@
 ---
-title: "11-IsletEndoC_proteomics"
+title: "10-Islet_proteomics"
 author: "Kathryn Walters"
 date: "2023-07-07"
 output: html_document
