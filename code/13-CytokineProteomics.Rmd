@@ -1,0 +1,406 @@
+---
+title: "13-cytokineProteomics"
+author: "Kathryn Walters"
+date: "2023-07-24"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(Biostrings)
+library(rlist)
+library(ggVennDiagram)
+library(readr)
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+# library(conflicted)
+library(limma)
+library(tidyverse)
+library(readxl)
+# conflict_prefer("here", "here")
+# conflict_prefer("filter", "dplyr")
+```
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+tx2gene <- geneInfo[,c(2,1)]
+
+#first let's load the data and metadata. 
+#loading the proteomics data for limma DEA analysis.  
+islets2_all_OQ <- read_tsv(here("proteomics", "ORFquantFilteredmatches", "Cyto_set2",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+
+islets3_all_OQ <- read_tsv(here("proteomics", "ORFquantFilteredmatches", "Cyto_set3",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+
+islets2_all_RC <- read_tsv(here("proteomics", "RiboCodeFilteredmatches", "Cyto24hr-set2",  "protein.tsv")) %>% as.data.frame()  %>% filter(`Unique Peptides` > 1)
+islets3_all_RC <- read_tsv(here("proteomics", "RiboCodeFilteredmatches", "Cyto24hr-set3",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+
+islets2_all_RT <- read_tsv(here("proteomics", "RibotricerFilteredmatches", "Cyto24hr-set2",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+islets3_all_RT <- read_tsv(here("proteomics", "RibotricerFilteredmatches", "Cyto24hr-set3",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+
+
+Endo_all_OQ <- read_tsv(here("proteomics", "ORFquantFilteredmatches", "Endo_24hr_IFNa",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+
+Endo_all_RC <- read_tsv(here("proteomics", "RiboCodeFilteredmatches", "EndoC-24hrIFNa",  "protein.tsv")) %>% as.data.frame()  %>% filter(`Unique Peptides` > 1)
+
+Endo_all_RT <- read_tsv(here("proteomics", "RibotricerFilteredmatches", "EndoC024hrIFNa",  "protein.tsv")) %>% as.data.frame() %>% filter(`Unique Peptides` > 1)
+```
+
+
+```{r}
+#design matrix for islet data
+# Sample information
+sample_names <- c("Sample1", "Sample2", "Sample3", "Sample4", "Sample5", "Sample6", "Sample7", "Sample8", "Sample9", "Sample10", "Sample11", "Sample12", "Sample13", "Sample14", "Sample15", "Sample16", "Sample17", "Sample18", "Sample19", "Sample20")
+condition <- c("Control", "Control","Control", "Control","Control", "Treatment", "Treatment", "Treatment", "Treatment", "Treatment", "Control", "Control","Control", "Control","Control", "Treatment", "Treatment", "Treatment", "Treatment", "Treatment")
+pairing <- c("A", "B","C", "D","E", "A", "B", "C", "D", "E", "F", "G","H", "I","J", "F", "G", "H", "I", "J")
+
+# Create a data frame with sample information
+sample_info <- data.frame(Sample = sample_names, Condition = condition, Pair = pairing)
+
+# Convert the 'Condition' column to a factor
+sample_info$Condition <- factor(sample_info$Condition)
+sample_info$Pair <- factor(sample_info$Pair)
+
+# Create the design matrix
+design <- model.matrix(~~Pair+Condition, data = sample_info)
+
+
+#design matrix for EndoC data
+# Sample information
+sample_names2 <- c("Sample1", "Sample2", "Sample3", "Sample4", "Sample5", "Sample6", "Sample7", "Sample8", "Sample9", "Sample10")
+condition2 <- c("Control", "Treatment", "Control", "Treatment","Control", "Treatment","Control", "Treatment","Control", "Treatment")
+pairing2 <- c("A", "A","B", "B","C", "C", "D", "D", "E", "E")
+
+# Create a data frame with sample information
+sample_info2 <- data.frame(Sample = sample_names2, Condition = condition2, Pair = pairing2)
+
+# Convert the 'Condition' column to a factor
+sample_info2$Condition <- factor(sample_info2$Condition)
+sample_info2$Pair <- factor(sample_info2$Pair)
+
+# Create the design matrix
+design2 <- model.matrix(~~Pair+Condition, data = sample_info2)
+
+```
+
+
+```{r functions to use for the islets}
+cleanupData <- function(input1, input2) {
+  
+islets2 <- input1[,c(4,26:35)] %>% column_to_rownames("Protein ID")
+colnames(islets2) <- c("NoCyto_A_2", "NoCyto_B_2", "NoCyto_C_2", "NoCyto_D_2", "NoCyto_E_2", "Cyto_A_2", "Cyto_B_2", "Cyto_C_2", "Cyto_D_2", "Cyto_E_2")
+
+islets2[islets2 == 0] <- NA
+islets2 <- na.omit(islets2)
+temp <- na.omit(islets2)
+islets2 <- as.data.frame(normalizeMedianValues(log2(islets2))) %>% rownames_to_column("Protein_ID")
+
+
+islets3 <- input2[,c(4,26:35)] %>% column_to_rownames("Protein ID")
+colnames(islets3) <- c("NoCyto_A_3", "NoCyto_B_3", "NoCyto_C_3", "NoCyto_D_3", "NoCyto_E_3", "Cyto_A_3", "Cyto_B_3", "Cyto_C_3", "Cyto_D_3", "Cyto_E_3")
+
+islets3[islets3 == 0] <- NA
+islets3 <- na.omit(islets3)
+temp <- na.omit(islets3)
+islets3 <- as.data.frame(normalizeMedianValues(log2(islets3))) %>% rownames_to_column("Protein_ID")
+
+combo <- inner_join(islets2, islets3, by = "Protein_ID") %>% column_to_rownames("Protein_ID")
+
+return(combo)
+}
+
+performLimma <- function(matrix, design) {
+  
+batch <- c("A", "A","A","A","A","A","A","A","A","A","B","B","B","B","B","B","B","B","B","B")
+combo <- removeBatchEffect(matrix, batch)
+
+fit <- lmFit(combo, design)
+#fit <- contrasts.fit(fit, contrasts = contrast_matrix)
+fit <- eBayes(fit, trend = TRUE) 
+results <- topTable(fit,coef=11, number = nrow(combo), adjust.method = "fdr")
+return(results)
+}
+```
+
+```{r functions to use for the EndoC}
+cleanupData2 <- function(input1) {
+  
+islets2 <- input1[,c(4,26:35)] %>% column_to_rownames("Protein ID")
+colnames(islets2) <- c("NoCyto_A", "Cyto_A", "NoCyto_B", "Cyto_B", "NoCyto_C", "Cyto_C", "NoCyto_D", "Cyto_D", "NoCyto_E", "Cyto_E")
+
+islets2[islets2 == 0] <- NA
+islets2 <- na.omit(islets2)
+temp <- na.omit(islets2)
+islets2 <- as.data.frame(normalizeMedianValues(log2(islets2)))
+
+return(islets2)
+}
+
+performLimma2 <- function(matrix, design) {
+
+fit <- lmFit(matrix, design)
+fit <- eBayes(fit, trend = TRUE) 
+results <- topTable(fit,coef=6, number = nrow(matrix), adjust.method = "fdr")
+return(results)
+}
+```
+
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+islets_OQ <- cleanupData(islets2_all_OQ, islets3_all_OQ)
+islets_RC <- cleanupData(islets2_all_RC, islets3_all_RC)
+islets_RT <- cleanupData(islets2_all_RT, islets3_all_RT)
+
+EndoC_OQ <- cleanupData2(Endo_all_OQ)
+EndoC_RC <- cleanupData2(Endo_all_RC)
+EndoC_RT <- cleanupData2(Endo_all_RT)
+
+
+res_OQ <- performLimma(islets_OQ, design)
+res_RC <- performLimma(islets_RC, design)
+res_RT <- performLimma(islets_RT, design)
+
+res_OQ_EC <- performLimma2(EndoC_OQ, design2)
+res_RC_EC <- performLimma2(EndoC_RC, design2)
+res_RT_EC <- performLimma2(EndoC_RT, design2)
+
+#Need to switch the ORF ID from transcripts to genes for ORFquant
+res_OQ <- res_OQ %>% rownames_to_column("ORF_ID") %>% separate(col = "ORF_ID", into = c("transcript_id", "first", "second"), sep = "_", remove = TRUE) 
+res_OQ <- left_join(res_OQ, tx2gene)
+res_OQ <- res_OQ %>% unite(col = "ORF_ID", c("gene_id", "first", "second"), sep = "_", remove = FALSE)
+
+res_OQ_EC <- res_OQ_EC %>% rownames_to_column("ORF_ID") %>% separate(col = "ORF_ID", into = c("transcript_id", "first", "second"), sep = "_", remove = TRUE) 
+res_OQ_EC <- left_join(res_OQ_EC, tx2gene)
+res_OQ_EC <- res_OQ_EC %>% unite(col = "ORF_ID", c("gene_id", "first", "second"), sep = "_", remove = FALSE)
+ 
+
+#Need to switch the ORF ID from transcripts to genes for Ribotricer
+res_RT <- res_RT %>% rownames_to_column("ORF_ID") %>% separate(col = "ORF_ID", into = c("transcript_id", "first", "second", "third"), sep = "_", remove = TRUE) 
+res_RT <- left_join(res_RT, tx2gene)
+res_RT <- res_RT %>% unite(col = "ORF_ID", c("gene_id", "first", "second", "third"), sep = "_", remove = FALSE)
+
+res_RT_EC <- res_RT_EC %>% rownames_to_column("ORF_ID") %>% separate(col = "ORF_ID", into = c("transcript_id", "first", "second", "third"), sep = "_", remove = TRUE) 
+res_RT_EC <- left_join(res_RT_EC, tx2gene)
+res_RT_EC <- res_RT_EC %>% unite(col = "ORF_ID", c("gene_id", "first", "second", "third"), sep = "_", remove = FALSE)
+
+
+res_OQ_Sig <- res_OQ %>% filter(adj.P.Val < 0.1) 
+res_RC_Sig <- res_RC %>% filter(adj.P.Val < 0.1) %>% rownames_to_column("ORF_ID")
+res_RT_Sig <- res_RT %>% filter(adj.P.Val < 0.1)
+
+res_OQ_Sig_EC <- res_OQ_EC %>% filter(adj.P.Val < 0.1) 
+res_RC_Sig_EC <- res_RC_EC %>% filter(adj.P.Val < 0.1) %>% rownames_to_column("ORF_ID")
+res_RT_Sig_EC <- res_RT_EC %>% filter(adj.P.Val < 0.1)
+
+
+```
+
+
+
+#What do I want to know? ... 
+
+#1. What percent of nuORFs w/proteomic support in islets are differentially regulated upon cytokine treatment? Up or down? 
+#     This is very very low. We are talking 20 out of 13,000. Percent is not going to be a good way to look at this. Also seems like 99% (bascially all) are upregulated in Cyto+ conditions. 
+
+#2. Is one category of nuORFs more likely to be differentially expressed? ie. look at the log2FC for each ORF and see the spread. 
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered.xlsx")) 
+
+AllORFs %>% filter(program == "Ribocode") %>% pull(ORF_type) %>% table()
+
+#why do I have so many ORFs that are not in my AllORFs list??? What is the difference here??? 
+#I figured this out. Apparently these were collapsed at some point. How they have unique proteins is a bit confusing. 
+res_OQ_Sig <- left_join(res_OQ_Sig, AllORFs, by = join_by(ORF_ID))
+res_RC_Sig <- left_join(res_RC_Sig, AllORFs)
+res_RT_Sig <- left_join(res_RT_Sig, AllORFs, by = join_by(ORF_ID))
+
+res_OQ_Sig_EC <- left_join(res_OQ_Sig_EC, AllORFs, by = join_by(ORF_ID, gene_id))
+res_RC_Sig_EC <- left_join(res_RC_Sig_EC, AllORFs)
+res_RT_Sig_EC <- left_join(res_RT_Sig_EC, AllORFs, by = join_by(ORF_ID, gene_id))
+
+
+res_OQ <- left_join(res_OQ, AllORFs, by = join_by("ORF_ID", "gene_id"))
+res_RC <- left_join(res_RC %>% rownames_to_column("ORF_ID"), AllORFs, by = join_by(ORF_ID))
+res_RT<- left_join(res_RT, AllORFs, by = join_by("ORF_ID", "gene_id"))
+
+
+ggplot(res_OQ %>% filter(ORF_type != "annotated"), aes(logFC, -log10(P.Value), color = ORF_type)) +
+  geom_point() +
+  ylab("-log10 p-value") +
+  geom_hline(yintercept=-log10(.05), linetype="dashed", color = "black") +
+  xlab("log2 fold change") +
+  theme_classic() 
+
+ggplot(res_RC %>% filter(ORF_type != "annotated"), aes(logFC, -log10(P.Value), color = ORF_type)) +
+  geom_point() +
+  ylab("-log10 p-value") +
+  geom_hline(yintercept=-log10(.05), linetype="dashed", color = "black") +
+  xlab("log2 fold change") +
+  theme_classic() 
+
+
+# Define colors for each ORF_type category
+color_palette <- c("dORF" = "blue", "uORF" = "green", "novel" = "red", "other" = "purple")
+
+ggplot(res_OQ %>% filter(ORF_type != "annotated" & P.Value < 0.05), 
+       aes(logFC, -log10(P.Value), color = ORF_type)) +
+  geom_point() +
+  ylab("-log10 p-value") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  xlab("log2 fold change") +
+  theme_classic() +
+  scale_color_manual(values = color_palette)
+
+
+
+
+ggplot(res_RT, aes(y = logFC, x = ORF_type)) +
+  geom_violin() +
+  ylab("LogFC") +
+  xlab("") +
+  theme_classic() 
+
+
+
+
+all <- rbind(res_OQ[,c(2,5,8,9,13,14,11)], res_RC[,c(1,2,5,6,9,11,10)], res_RT[,c(2,6,9,10,14,15,12)])
+
+colnames(res_OQ[,c(2,5,8,9,13,14,11)])
+colnames(res_RC[,c(1,2,5,6,9,11,10)])
+colnames(res_RT[,c(2,6,9,10,14,15,12)])
+
+all %>% filter(adj.P.Val < 0.1) %>% select(ORF_type) %>% table()
+all_sig <- all %>% filter(adj.P.Val < 0.1) %>% na.omit()
+
+all_sig %>% filter(ORF_type != "annotated") %>% View()
+
+all_sig_table <- all_sig %>% select(ORF_type) %>% table() %>% as.data.frame()
+all_sig_table$percent <- all_sig_table$Freq/sum(all_sig_table$Freq)*100
+
+#making plots
+ggplot(all_sig_table, aes(x=ORF_type, y=Freq)) + 
+    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Count") + xlab("")
+
+ggplot(all_sig_table, aes(x=ORF_type, y=percent)) + 
+    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("")
+
+novelCytoDiff <- left_join(all_sig %>% filter(ORF_type != "annotated"), geneInfo[,-c(2)] %>% unique(), by = "gene_id")
+
+```
+
+
+
+```{r message=FALSE}
+nuVanno <- read_tsv(here("accessories", "gffCompare", "geneIDswitch.playnuORFs3.gtf.tmap"))
+
+nuVanno %>% select(class_code) %>% table()
+
+nuVanno_j <- nuVanno %>% filter(class_code == "j")
+
+nuVgencode <- read_tsv(here("accessories", "gffCompare", "gencodeReference.playnuORFs3.gtf.tmap"))
+
+nuVgencode %>% select(class_code) %>% table()
+
+
+#where are the J's going in the reference gencode annotation?
+left_join(nuVanno_j, nuVgencode[,3:4], by = "qry_gene_id") %>% select(class_code.y) %>% table()
+
+
+library(AnnotationDbi)
+txdb <- loadDb(here("accessories","txdb.gencode26.sqlite"))
+cds <- cdsBy(txdb, by = "tx", use.names=T)
+
+rtracklayer::export(unlist(cds), here("accessories", "cds.gtf"))
+
+
+ORFvgencode <- read_tsv(here("accessories", "gffCompare", "ORFquant.ORFquant_CDS_final.gtf.tmap"))
+
+ORFvgencode <- left_join(ORFvgencode, orfquant_minimal, by = c("qry_gene_id" = "id"))
+
+ORFvgencode %>% dplyr::select(annotation, class_code) %>% group_by(annotation) %>% table()
+
+ORFvgencode %>% dplyr::select(class_code) %>% table()
+
+ORFvgencode <- data.frame(lapply(ORFvgencode, function(x) { gsub("N_truncation", "ORF_annotated", x)}))
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+#ORFQuant
+islets2_OQ <- read_xlsx(here("proteomics", "ORFQuant", "Cyto24_set2", "CT_diff_Stat", "Protein_Stats_ORF_Cyto24_Set2.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(islets2_OQ) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+islets2_OQ_sig <- islets2_OQ %>% filter(pvalue < 0.05 & LFC > 1)
+
+
+islets3_OQ <- read_xlsx(here("proteomics", "ORFQuant", "Cyto24_set3", "CT_diff_Stat", "Protein_Stats_ORF_Cyto24_Set3.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(islets3_OQ) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+islets3_OQ_sig <- islets3_OQ %>% filter(pvalue < 0.05 & LFC > 1)
+
+islets_OQsig_all <- rbind(islets2_OQ_sig, islets3_OQ_sig) # weirdly, none of the ones found overlap 
+
+endoC_OQ <- read_xlsx(here("proteomics", "ORFQuant", "EndoC_IFN24", "CT_diff_Stat", "Protein_Stats_ORF_EndoC.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(endoC_OQ) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+endoC_OQ_sig <- endoC_OQ %>% filter(pvalue < 0.05 & LFC > 1)
+
+
+
+#RiboCode
+islets2_RC <- read_xlsx(here("proteomics", "RiboCode", "Cyto24_set2", "CT_diff_Stat", "Protein_Stats_Ribo_Cyto24_Set2.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(islets2_RC) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+islets2_RC_sig <- islets2_RC %>% filter(pvalue < 0.05 & LFC > 1)
+
+
+islets3_RC <- read_xlsx(here("proteomics", "RiboCode", "Cyto24_set3", "CT_diff_Stat", "Protein_Stats_Ribo_Cyto24_Set3.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(islets3_RC) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+islets3_RC_sig <- islets3_RC %>% filter(pvalue < 0.05 & LFC > 1)
+
+islets_RCsig_all <- rbind(islets2_RC_sig, islets3_RC_sig) # weirdly, none of the ones found overlap again 
+
+endoC_RC <- read_xlsx(here("proteomics", "RiboCode", "EndoC_IFN24", "CT_diff_Stat", "Protein_Stats_Ribo_EndoC.xlsx"), sheet = "Stats") %>% as.data.frame()
+colnames(endoC_RC) <- c("ORF_ID", "ORF_ID2", "pvalue", "qvalue", "LFC")
+endoC_RC_sig <- endoC_RC %>% filter(pvalue < 0.05 & LFC > 1)
+
+islets_OQsig_all$ORF_ID <- sub("^'", "", islets_OQsig_all$ORF_ID)  # Remove the leading single quote
+islets_OQsig_all$ORF_ID <- sub("'$", "", islets_OQsig_all$ORF_ID)  # Remove the trailing single quote
+
+islets_RCsig_all$ORF_ID <- sub("^'", "", islets_RCsig_all$ORF_ID)  # Remove the leading single quote
+islets_RCsig_all$ORF_ID <- sub("'$", "", islets_RCsig_all$ORF_ID)  # Remove the trailing single quote
+
+
+endoC_OQ_sig$ORF_ID <- sub("^'", "", endoC_OQ_sig$ORF_ID)  # Remove the leading single quote
+endoC_OQ_sig$ORF_ID <- sub("'$", "", endoC_OQ_sig$ORF_ID)  # Remove the trailing single quote
+
+
+endoC_RC_sig$ORF_ID <- sub("^'", "", endoC_RC_sig$ORF_ID)  # Remove the leading single quote
+endoC_RC_sig$ORF_ID <- sub("'$", "", endoC_RC_sig$ORF_ID)  # Remove the trailing single quote
+
+
+
+#let's see what their ORF type is..
+islets_OQsig_all <- left_join(islets_OQsig_all, AllORFs, by = "ORF_ID")
+
+islets_RCsig_all <- left_join(islets_RCsig_all, AllORFs, by = "ORF_ID")
+
+endoC_OQ_sig <- left_join(endoC_OQ_sig, AllORFs, by = "ORF_ID")
+
+endoC_RC_sig <- left_join(endoC_RC_sig, AllORFs, by = "ORF_ID")
+
+
+```
+
+
+
+
+

@@ -1,0 +1,199 @@
+---
+title: "16-nuORF_specificity"
+author: "Kathryn Walters"
+date: "2023-11-02"
+output: html_document
+---
+
+
+```{r warning=FALSE, message=FALSE}
+hiconfidence <- read_xlsx(here("accessories", "Mudge_etal_ORFdatabase.xlsx"), sheet = 3)
+loconfidence <- read_xlsx(here("accessories", "Mudge_etal_ORFdatabase.xlsx"), sheet = 4)
+
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics.xlsx"))
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+tx2gene <- geneInfo[,c(2,1)]
+
+```
+
+
+```{r warning=FALSE, message=FALSE}
+
+hiconfidence$orf_sequence <- sapply(hiconfidence$orf_sequence, function(x) substr(x, 1, nchar(x) - 1))
+loconfidence$orf_sequence <- sapply(loconfidence$orf_sequence, function(x) substr(x, 1, nchar(x) - 1))
+
+AllORFs_nu <- AllORFs %>% filter(ORF_type != "annotated")
+
+set1 <- as.matrix(hiconfidence)[,11]
+set2 <- as.matrix(loconfidence)[,11]
+set3 <- as.matrix(AllORFs_nu)[,2]
+
+listALL <- list(Database1=set1, Database2=set2, nuORFs = set3)
+
+p_nuORFoverlap <- ggVennDiagram(listALL, label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+p_nuORFoverlap
+
+#ggsave(plot = p_nuORFoverlap, filename = here("plots", "tmp_venndiagram.pdf"), width = 4, height = 3)
+
+
+```
+
+```{r warning=FALSE, message=FALSE}
+nuORFaligned <- read_table(here("accessories", "nuORFalign.txt"), col_names = FALSE)
+
+colnames(nuORFaligned) <- c("queryID", "targetID", "identical_matches", "alignment_length", "mismatches", "gap_openings", "query_start", "query_end", "target_start", "target_end", "evalue", "bitscore")
+
+nuORFaligned_high <- nuORFaligned %>% group_by(queryID) %>% filter(identical_matches == max(identical_matches))
+
+hist(nuORFaligned_high$identical_matches, breaks = 50)
+
+nuORFaligned_high <- nuORFaligned_high %>% filter(identical_matches > 89.999)
+
+orfDatabase <- rbind(hiconfidence, loconfidence)
+
+nuORFaligned_all <- left_join(nuORFaligned_high, orfDatabase, by = c("targetID" = "orf_name"))
+
+nuORFaligned_all %>% filter(Riboseq_evidence == 1 & Gaertner_et_al_2020 == 1) %>% nrow()
+
+AllORFs <- AllORFs %>% dplyr::mutate(nuORFdatabase = case_when(ORF_ID %in% nuORFaligned_all$queryID ~ 'Yes', !(ORF_ID %in% nuORFaligned_all$queryID) ~ 'No'))
+
+nuORFaligned_sub <- nuORFaligned_all[,c(1,26,33)] %>% unique()
+
+nuORFaligned_sub$sum <- nuORFaligned_sub$Riboseq_evidence + nuORFaligned_sub$Gaertner_et_al_2020
+nuORFaligned_sub <- nuORFaligned_sub %>% group_by(queryID) %>% filter(sum == max(sum)) %>% select(-sum)
+
+AllORFs <- left_join(AllORFs, nuORFaligned_sub, by = c("ORF_ID" = "queryID"))
+
+names(AllORFs)[names(AllORFs) == 'Gaertner_et_al_2020'] <- 'PancreaticProgenitor'
+
+geneInfo2 <- geneInfo[,c(1,4)] %>% unique()
+
+AllORFs <- left_join(AllORFs, geneInfo2)
+
+AllORFs %>% filter(ORF_type!= "annotated") %>% select(nuORFdatabase) %>% table()
+
+nuORFs <- AllORFs %>% filter(ORF_type!= "annotated")
+
+nuORFs_barplot <- nuORFs %>% group_by(ORF_type) %>% select(nuORFdatabase) %>% table() %>% as.data.frame()
+
+nuORFs_barplot$ORF_type <- factor(nuORFs_barplot$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', 'dORF', 'other'))
+
+nuORFs_barplot <- pivot_wider(nuORFs_barplot, names_from = nuORFdatabase, values_from = Freq)
+
+nuORFs_barplot$percent <- nuORFs_barplot$No/(nuORFs_barplot$No + nuORFs_barplot$Yes) * 100
+
+colors <- c("#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+nuORF_specific <- ggplot(data=nuORFs_barplot %>% filter(ORF_type != "other"), aes(x=ORF_type, y=percent, fill=ORF_type)) + geom_bar(stat="identity") + theme_minimal() + ylab("% ORF Beta-cell Specific") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_fill_manual(values = colors)
+
+#ggsave(plot = nuORF_specific, filename = here("plots", "nuORFs_Betaspecific.pdf"), width = 4, height = 3)
+```
+
+
+```{r warning=FALSE, message=FALSE}
+
+GWAS <- read_xlsx(here("accessories", "GWAS_geneList.xlsx"), col_names = FALSE)
+
+colnames(GWAS) <- c("symbol", "location")
+
+AllORFs_nu <- AllORFs %>% filter(ORF_type != "annotated")
+
+GWASjoined <- left_join(GWAS, AllORFs_nu)
+
+
+Hugo <- read_csv(here("accessories", "t1d_gene_finder_data.csv"))
+
+HugoJoined <- left_join(Hugo, AllORFs_nu, by = c("gene" = "symbol"))
+
+#write_csv(HugoJoined, here("output", "HugoDB_wnuORF.csv"))
+
+HugoJoined <- HugoJoined[complete.cases(HugoJoined$ORF_ID), ]
+
+HugoJoined %>% pull(gene) %>% unique()
+
+
+AllORFs_nu <- left_join(AllORFs_nu, Hugo, by = c("symbol" = "gene"))
+
+AllORFs_nu <- AllORFs_nu %>% dplyr::arrange(desc(`T1D:huge`), `T1D:pValue`)
+
+AllORFs_nu$unique_column <- ave(AllORFs_nu$symbol, AllORFs_nu$symbol, FUN = function(x) {
+  if(length(x) > 1) {
+    seq_along(x)
+  } else {
+    ""
+  }
+})
+
+AllORFs_nu$unique_column <- ave(AllORFs_nu$symbol, AllORFs_nu$symbol, FUN = function(x) {
+  seq_along(x)
+})
+AllORFs_nuII <- AllORFs_nu
+#write_csv(AllORFs_nuII, here("output", "AllORFs_nu_ALLDATA.csv"))
+
+
+AllORFs_nu <- AllORFs_nu %>% unite(col = "symbolII", c(14,24), sep = "_")
+
+AllORFs_nu_50 <- AllORFs_nu[1:41, ]
+
+AllORFs_nu_50$ORF_type <- factor(AllORFs_nu_50$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', 'dORF', 'other'))
+
+plotGSEAexplore <- AllORFs_nu_50 %>%
+  arrange(`T1D:huge`, desc(`T1D:pValue`)) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(symbolII=factor(symbolII, levels=symbolII)) %>%   # This trick updates the factor levels
+ ggplot( aes(x=symbolII, y=log10(`T1D:huge`), fill = ORF_type)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "HuGE Score") + ylab("log10(HuGE Score)") + xlab(NULL) + theme_minimal() + scale_fill_manual(values = colors)
+
+plotGSEAexplore
+
+#ggsave(plot = plotGSEAexplore, filename = here::here("plots", "HuGE_Plotexplore.pdf"), device = "pdf", units = "in", width = 7, height = 4, dpi = 320)
+
+
+AllORFs_nu_all <- AllORFs_nu[1:142, ]
+
+AllORFs_nu_all$ORF_type <- factor(AllORFs_nu_all$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', 'dORF', 'other'))
+
+#write_csv(AllORFs_nu_all, here("output", "HugoDB_wnuORFonly.csv"))
+
+plotGSEAexplore2 <- AllORFs_nu_all %>%
+  arrange(`T1D:huge`, desc(`T1D:pValue`)) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(symbolII=factor(symbolII, levels=symbolII)) %>%   # This trick updates the factor levels
+ ggplot( aes(x=symbolII, y=`T1D:huge`, fill = ORF_type)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "HuGE Score") + ylab("log10(HuGE Score)") + xlab(NULL) + theme_minimal() + scale_fill_manual(values = colors) 
+
+plotGSEAexplore2
+
+
+
+#ggsave(plot = plotGSEAexplore2, filename = here::here("plots", "HuGE_PlotexploreAll.pdf"), device = "pdf", units = "in", width = 6, height = 13, dpi = 320)
+```
+
+
+```{r warning=FALSE, message=FALSE}
+
+TYKvars <- read_csv(here("accessories", "kp_variant_TYK_regions.csv"))
+
+TYKvars$TYK <- "TYK2"
+
+colnames(TYKvars)
+
+ggviolin(TYKvars, y="Beta__T1D", x="TYK", trim = F, add=c("mean"))+ theme_minimal() + ylab("log10(Odds Ratio)") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+TYK_regions4 <- read_tsv(here("accessories", "TYK_regions4.tsv"), col_names = FALSE)
+TYK_regions4 <- TYK_regions4 %>% arrange(desc(X2))
+
+TYK_regions4 %>%
+ ggplot( aes(x=X2, y=X3)) +
+    geom_point() + theme_minimal() + ylab("Log10(Odds Ratio)") + xlab("Position - 5'-> 3'")
+
+
+```
+
+

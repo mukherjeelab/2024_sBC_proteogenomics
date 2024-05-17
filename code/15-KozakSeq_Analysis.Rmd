@@ -1,0 +1,198 @@
+---
+title: "15-KozakSeq"
+author: "Kathryn Walters"
+date: "2023-07-31"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(Biostrings)
+library(rlist)
+library(ggVennDiagram)
+library(readr)
+library(here)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggthemes)
+library(reshape2)
+library(ggpubr)
+library(scales)
+library(readxl)
+library(stringr)
+# library(conflicted)
+# 
+# conflict_prefer("here", "here")
+# conflict_prefer("filter", "dplyr")
+```
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics.xlsx"))
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+tx2gene <- geneInfo[,c(2,1)]
+
+```
+
+
+```{r}
+optimal <- c("GCCACCATGG", "GCCGCCATGG")
+strong <- c("...A..ATGG", "...G..ATGG")
+moderate <- c("...A..ATGA", "...A..ATGC", "...A..ATGT", "...G..ATGA", "...G..ATGC", "...G..ATGT", "...C..ATGG", "...T..ATGG")
+
+match_category <- function(sequence) {
+  if (any(grepl(paste(optimal, collapse = "|"), sequence))) {
+    return("optimal")
+  } else if (any(grepl(paste(strong, collapse = "|"), sequence))) {
+    return("strong")
+  } else if (any(grepl(paste(moderate, collapse = "|"), sequence))) {
+    return("moderate")
+  } else {
+    return("unknown")
+  }
+}
+
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+TEdata <- read_csv(here("NAseqs", "Top20TE_NAseqs.csv"))
+TEdata <- TEdata[,c(3,6,10)] %>% filter(tCodon1 > 6)
+
+TEdata$Kozakcategory <- sapply(TEdata$Kozak_sequence, match_category)
+
+TEdata$Kozakcategory %>% table()
+
+TEdata$program <- "TopTEgenes"
+TEdata$ORF_type <- "Top20TEgenes"
+TEdata$Protein <- "Yes"
+
+colnames(TEdata) <- c("ORF_id", "tSTART", "KozakSequence", "KozakCategory", "Program", "ORF_type", "Protein")
+
+TEdata <- TEdata %>% select(-tSTART) %>% unique()
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+RCdata <- read_csv(here("NAseqs", "Ribocode_NAseqs.csv"))
+RCdata <- RCdata[,c(2,5,8)] %>% filter(ORF_tstart > 6)
+
+RCdata$Kozakcategory <- sapply(RCdata$Kozak_sequence, match_category)
+
+RCdata$Kozakcategory %>% table()
+
+RCdata$program <- "Ribocode"
+
+RCdata <- left_join(RCdata, AllORFs)
+RCdata <- RCdata[,c(1:5,7,9)]
+
+colnames(RCdata) <- c("ORF_id", "tSTART", "KozakSequence", "KozakCategory", "Program", "ORF_type", "Protein")
+
+RCdata <- RCdata %>% select(-tSTART) %>% unique()
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+OQdata <- read_csv(here("NAseqs", "ORFquant_NAseqs.csv"))
+OQdata <- OQdata[,c(3,4,10)] %>% filter(first > 6)
+
+OQdata$Kozakcategory <- sapply(OQdata$Kozak_sequence, match_category)
+
+OQdata$Kozakcategory %>% table()
+
+OQdata$program <- "ORFquant"
+
+OQdata <- left_join(OQdata, AllORFs)
+OQdata <- OQdata[,c(1:5,7,9)]
+
+colnames(OQdata) <- c("ORF_id", "tSTART", "KozakSequence", "KozakCategory", "Program", "ORF_type", "Protein")
+
+OQdata <- OQdata %>% select(-tSTART) %>% unique()
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+KozakAll <- rbind(TEdata, RCdata, OQdata)
+
+KozakAll <- KozakAll %>% dplyr::mutate(KozakCategoryII = case_when(KozakCategory == "optimal" ~ "strong", .default = KozakCategory))
+
+Kozaktable_deProgram <- KozakAll %>% group_by(ORF_type, KozakCategoryII) %>% dplyr::summarise(Count = n())
+
+Kozaktable_deProgram$KozakCategoryII <- factor(Kozaktable_deProgram$KozakCategoryII, order = TRUE, levels =c('optimal', 'strong', 'moderate', 'unknown'))
+
+Kozaktable_deProgram$ORF_type <- factor(Kozaktable_deProgram$ORF_type, order = TRUE, levels =c('Top20TEgenes', 'annotated', 'novel', 'uORF', 'dORF', 'other'))
+
+ggplot(Kozaktable_deProgram, aes(fill=KozakCategoryII, y=Count, x=ORF_type)) +
+    geom_bar(position="fill", stat="identity") + theme_minimal() + ylab("Percent") + xlab("")
+
+totals <- Kozaktable_deProgram %>% group_by(ORF_type) %>% dplyr::summarise(Total = sum(Count))
+
+Kozaktable_deProgram <- left_join(Kozaktable_deProgram, totals)
+Kozaktable_deProgram$percent <- Kozaktable_deProgram$Count/Kozaktable_deProgram$Total *100
+
+
+colors <- c("purple4", "#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+
+
+p_Kozak_programCollapse <-ggplot(Kozaktable_deProgram %>% filter(ORF_type != "other" & KozakCategoryII != "moderate"), aes(fill=ORF_type, y=percent, x=ORF_type)) + geom_bar(position="stack", stat="identity") + theme_minimal() + ylab("Percent") + xlab("") + facet_wrap(~KozakCategoryII, ncol =4, scales="free_y") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_fill_manual(values = colors)
+
+
+
+#ggsave(plot = p_Kozak_programCollapse, filename = here("plots", "Kozak_programCollapse.pdf"), width = 6.5, height = 3)
+```
+
+
+```{r}
+TEdata1 <- TEdata
+TEdata2 <- TEdata
+TEdata3 <- TEdata
+
+TEdata2$Program <- "Ribocode"
+TEdata3$Program <- "ORFquant"
+
+KozakAll2 <- rbind( TEdata2, TEdata3, RCdata, OQdata)
+
+Kozaktable <- KozakAll2 %>% group_by(Program, ORF_type, KozakCategory) %>% summarise(Count = n())
+
+Kozaktable$KozakCategory <- factor(Kozaktable$KozakCategory, order = TRUE, levels =c('optimal', 'strong', 'moderate', 'unknown'))
+
+Kozaktable$ORF_type <- factor(Kozaktable$ORF_type, order = TRUE, levels =c('Top20TEgenes', 'annotated', 'novel', 'uORF', 'dORF', 'other'))
+
+ggplot(Kozaktable, aes(fill=KozakCategory, y=Count, x=ORF_type)) +
+    facet_wrap(~Program) +
+    geom_bar(position="fill", stat="identity") + theme_minimal() + ylab("Percent") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+totals2 <- Kozaktable %>% group_by(ORF_type, Program) %>% summarise(Total = sum(Count))
+
+Kozaktable <- left_join(Kozaktable, totals2)
+Kozaktable$percent <- Kozaktable$Count/Kozaktable$Total *100
+
+
+p_Kozak_programFacet <- ggplot(Kozaktable %>% filter(ORF_type != "other"), aes(fill=ORF_type, y=percent, x=ORF_type)) + geom_bar(position="stack", stat="identity") + theme_minimal() + ylab("Percent") + xlab("") + facet_wrap(~Program+ KozakCategory, ncol =4, scales="free_y") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ scale_fill_manual(values = colors)
+
+AllORFs %>% filter(ORF_type != "annotated")
+
+#ggsave(plot = p_Kozak_programFacet, filename = here("plots", "Kozak_programFacet.pdf"), width = 8, height = 6)
+```
+
+

@@ -1,0 +1,131 @@
+---
+title: "8-Annotated ORFs"
+author: "Kathryn Walters"
+date: "2023-05-16"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(Biostrings)
+library(rlist)
+library(ggVennDiagram)
+library(readr)
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+```
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+AllORFs <- read_csv(here("output", "GeneCollapsedORFs_AllPrograms.csv"))
+collapseORFs <- read_csv(here("output", "final_collapsedORFsList.csv"))
+
+
+#getting RiboCode list of ORFs found in sBC proteomics
+proteomicsRC <- read_tsv(here("proteomics", "RiboCode", "sBC_nORF", "combined_protein.tsv")) %>% filter(`Combined Unique Spectral Count` > 1) %>% pull(`Protein ID`) %>% as.data.frame()
+colnames(proteomicsRC) <- "ORF_ID"
+
+#getting ORFquant list of ORFs found in proteomics
+proteomicsOQ <- read_tsv(here("proteomics", "ORFQuant", "sBC_nORF", "combined_protein.tsv")) %>% filter(`Combined Unique Spectral Count` > 1) %>% pull(`Protein ID`) %>% as.data.frame()
+colnames(proteomicsOQ) <- "ORF_ID"
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+tx2gene <- geneInfo[,c(2,1)]
+```
+
+
+```{r per software, message=FALSE, warning=FALSE, echo=FALSE}
+
+collapsedORFlist <- read_csv(here("output", "final_collapsedORFsList.csv"))
+
+#grabbing only annotated genes
+RC_anno <- AllORFs %>% filter(ORF_type == "annotated" & program == "Ribocode")
+OQ_anno <- AllORFs %>% filter(ORF_type == "annotated" & program == "ORFquant")
+all_anno <- collapsedORFlist %>% filter(ORF_type == "annotated")
+
+#asking if these identified ORFs have proteomic support
+RC_anno <- RC_anno %>% dplyr::mutate(protein = case_when(ORF_ID %in% proteomicsRC$ORF_ID ~ 'Yes', !(ORF_ID %in% proteomicsRC$ORF_ID) ~ 'No'))
+RC_anno$protein %>% table()
+
+OQ_anno <- OQ_anno %>% dplyr::mutate(protein = case_when(ORF_ID %in% proteomicsOQ$ORF_ID ~ 'Yes', !(ORF_ID %in% proteomicsOQ$ORF_ID) ~ 'No'))
+OQ_anno$protein %>% table()
+
+
+#making a table to get the number/count of ORF ids with proteomic support and those without. 
+t_RC <- RC_anno$protein %>% table() %>% as.data.frame()
+t_RC$program <- "Ribocode"
+colnames(t_RC) <- c("proteinSupport", "value", "program")
+
+t_OQ <- OQ_anno$protein %>% table() %>% as.data.frame()
+t_OQ$program <- "ORFquant"
+colnames(t_OQ) <- c("proteinSupport", "value", "program")
+
+barplotData <- rbind(t_RC, t_OQ)
+
+#making plots
+p_anno_proteoSupport_percet <- ggplot(barplotData, aes(fill=proteinSupport, y=value, x=program)) + 
+    geom_bar(position="fill", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("")
+
+11970/(1844+11970)
+
+10977/(1487+10977)
+p_anno_proteoSupport_percet
+
+#ggsave(plot = p_anno_proteoSupport_percet, filename = here("plots", "annoProteinSupport_percet.pdf"), width = 4, height = 3)
+
+p_anno_proteoSupport_count <- ggplot(barplotData, aes(fill=proteinSupport, y=value, x=program)) + 
+    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Counts") + xlab("")
+
+p_anno_proteoSupport_count
+
+#ggsave(plot = p_anno_proteoSupport_count, filename = here("plots", "annoProteinSupport_counts.pdf"), width = 4, height = 3)
+
+
+set1 <- as.matrix(RC_anno)[,4]
+set3 <- as.matrix(OQ_anno)[,4]
+
+listALL <- list(RiboCode=set1, ORFquant = set3)
+
+unique.partition <- VennDiagram::get.venn.partitions(listALL)
+colnames(unique.partition) <- c("Ribocode", "ORFquant", "Set", "geneID", "count")
+
+combined <- unique.partition[1,4] %>% unlist()
+riboOnly <- unique.partition[3,4] %>% unlist()
+ORFquantOnly <- unique.partition[2,4] %>% unlist()
+
+proteoList <- rbind(RC_anno[,c(4,6)], OQ_anno[,c(4,6)]) %>% unique()
+
+proteoList <- proteoList %>% dplyr::mutate(Venndiagram = case_when(gene_id %in% combined ~ 'Both', gene_id %in% riboOnly ~ 'Ribocode', gene_id %in% ORFquantOnly ~ "ORFquant"))
+
+barplotInfoVenn <- proteoList %>% group_by(Venndiagram) %>% select(protein) %>% table() %>% as.data.frame()
+
+p_anno_proteoSupport_percent_Venn <- ggplot(barplotInfoVenn, aes(fill=protein, y=Freq, x=Venndiagram)) + geom_bar(position="fill", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("")
+
+ggsave(plot = p_anno_proteoSupport_percent_Venn, filename = here("plots", "annoProteinSupport_percent_Venn.pdf"), width = 4, height = 3)
+
+
+p_anno_proteoSupport_count_Venn <- ggplot(barplotInfoVenn, aes(fill=protein, y=Freq, x=Venndiagram)) + geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_grey() + ylab("Counts") + xlab("")
+
+p_anno_proteoSupport_count_Venn
+
+#ggsave(plot = p_anno_proteoSupport_count_Venn, filename = here("plots", "annoProteinSupport_counts_Venn.pdf"), width = 4, height = 3)
+
+(10278)/(10278+1860)
+(335)/(335+38)
+(1393)/(1393+246)
+
+ggVenn <- ggVennDiagram(listALL, edge_color = "black", label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+ggVenn
+
+#ggsave(plot = ggVenn, filename = here("plots", "annoORFs_Venndiagram.pdf"), width = 4, height = 3)
+
+```
+

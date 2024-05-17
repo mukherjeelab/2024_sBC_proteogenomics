@@ -1,0 +1,428 @@
+---
+title: "14-CodonBias"
+author: "Kathryn Walters"
+date: "2023-07-25"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(Biostrings)
+library(rlist)
+library(ggVennDiagram)
+library(readr)
+library(here)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggthemes)
+library(reshape2)
+library(ggpubr)
+library(scales)
+library(readxl)
+library(stringr)
+# library(conflicted)
+# 
+# conflict_prefer("here", "here")
+# conflict_prefer("filter", "dplyr")
+```
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered.xlsx"))
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+tx2gene <- geneInfo[,c(2,1)]
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+Top20TE <- read_csv(here("NAseqs", "Top20TE_NAseqs.csv"))
+
+#ORF_ID, AA_seq, ORF_type, gene_id, program, protein - AllORFs
+#column 4, 9, "Top20TE", 3, "None", "Yes"
+
+Top20TE <- Top20TE[,c(4,9,3)]
+colnames(Top20TE) <- c("ORF_ID", "AAseq", "gene_id")
+
+Top20TE$ORF_type <- "Top20TE"
+Top20TE$program <- "None"
+Top20TE$protein <- "Yes"
+
+Top20TE <- Top20TE %>% select("ORF_ID", "AAseq", "ORF_type", "gene_id", "program", "protein")
+
+colnames(Top20TE)
+colnames(AllORFs)
+AllORFs <- rbind(AllORFs[,1:6], Top20TE)
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#Function to count the number of times each codon occurs in a given sequence.
+codon_count_table <- function(sequence) {
+  # Convert sequence to uppercase to handle both cases
+  sequence <- toupper(sequence)
+
+  # Define all possible codons
+  all_codons <- c("AAA", "AAC", "AAG", "AAT",
+                  "ACA", "ACC", "ACG", "ACT",
+                  "AGA", "AGC", "AGG", "AGT",
+                  "ATA", "ATC", "ATG", "ATT",
+                  "CAA", "CAC", "CAG", "CAT",
+                  "CCA", "CCC", "CCG", "CCT",
+                  "CGA", "CGC", "CGG", "CGT",
+                  "CTA", "CTC", "CTG", "CTT",
+                  "GAA", "GAC", "GAG", "GAT",
+                  "GCA", "GCC", "GCG", "GCT",
+                  "GGA", "GGC", "GGG", "GGT",
+                  "GTA", "GTC", "GTG", "GTT",
+                  "TAA", "TAC", "TAG", "TAT",
+                  "TCA", "TCC", "TCG", "TCT",
+                  "TGA", "TGC", "TGG", "TGT",
+                  "TTA", "TTC", "TTG", "TTT")
+
+  # Split the sequence into triplets (codons)
+  codons <- substring(sequence, seq(1, nchar(sequence), by = 3), seq(3, nchar(sequence), by = 3))
+
+  # Get unique codons and count occurrences
+  unique_codons <- unique(codons)
+  counts <- sapply(all_codons, function(codon) {
+    sum(codons == codon)
+  })
+
+  # Create a data frame with codons and counts
+  codon_table <- data.frame(Codon = all_codons, Count = counts, stringsAsFactors = FALSE) %>% pivot_wider(names_from = Codon, values_from = Count) 
+  codon_table$sequence <- sequence
+  return(codon_table)
+}
+
+# Function to calculate the sum of values in specified columns for each row
+sum_values_in_Opticolumns <- function(data_frame, columns) {
+  # Initialize an empty vector to store the results
+  result <- vector("numeric", nrow(data_frame))
+  
+  # Iterate through each row
+  for (i in 1:nrow(data_frame)) {
+    # Extract the values from the specified columns
+    row_values <- unlist(data_frame[i, columns])
+    # Calculate the sum of values and store it in the result vector
+    result[i] <- sum(row_values)
+  }
+  
+  # Return the result vector
+  return(result)
+}
+```
+
+
+```{r optimal codon determination, message=FALSE, warning=FALSE}
+#Optimal codons were chosen to be the codons with maximum occurrences for each amino acid in highly expressed genes (20% of the genes with the highest PA). -Got that from this paper:
+#https://www.sciencedirect.com/science/article/pii/S2001037021001549#b0195
+
+
+#Get the Nucleotide sequence of their ORFs. 
+
+TEdata <- read_csv(here("NAseqs", "Top20TE_NAseqs.csv"))
+
+#Use the function above to calculate the sum of all the codons. 
+output_list_Top20 <- lapply(TEdata$extracted_sequence, codon_count_table)
+
+# Combine the list of dataframes into a single dataframe
+output_df_Top20 <- do.call(rbind, output_list_Top20)
+
+output_df_Top20 <- left_join(output_df_Top20, TEdata, by = c("sequence" = "extracted_sequence"))
+
+output_df_sum_TE <- colSums(output_df_Top20[1:64]) %>% as.data.frame() %>% rownames_to_column("codon")
+colnames(output_df_sum_TE) <- c("codon", "Count")
+
+## Determine the list of optimal and sub-optimal. 
+# Datatable to convert codons to amino acids
+data <- read.table(here("accessories", "AminoAcids.txt"), header = TRUE)
+
+# Add a new column for amino acids
+output_df_sum_TE <- left_join(output_df_sum_TE, data)
+
+# Group the data by amino acid and select the most abundant codon for each amino acid
+most_abundant_codons <- output_df_sum_TE %>%
+  dplyr::group_by(Amino_Acid) %>%
+  arrange(desc(Count)) %>%  # Sort in descending order based on counts
+  distinct(Amino_Acid, .keep_all = TRUE)  # Keep only the top entry for each amino acid
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+#I also want to get an FOP score for these top20 TE genes. 
+
+TEdata2 <- TEdata %>% dplyr::select(element2, extracted_sequence) %>% unique()
+#I have a list of optimal codons. Now I can use this to calculate the FOP score as per the paper listed above. This is #optimal codons in seq/#total codons used.
+
+# Apply the function to calculate codons to each sequence in the dataframe and create a list of resulting dataframes
+output_list_TE_R <- lapply(TEdata2$extracted_sequence, codon_count_table)
+
+# Combine the list of dataframes into a single dataframe
+output_df_TE <- do.call(rbind, output_list_TE_R)
+output_df_TE <- left_join(output_df_TE, TEdata2, by = c("sequence" = "extracted_sequence"))
+
+#Optimal codons used/Total codons used.
+  #So essentially I will have a list of codons that are optimal and a list of those that aren't and then each ORF will get a FOP score. 
+
+#get total of the optimal for the dataset. 
+
+# Call the function to get the sum of values in specified columns for each row
+sums_per_row_TE <- sum_values_in_Opticolumns(output_df_TE, most_abundant_codons$codon)
+
+# Add the sum as a new column in the data frame
+output_df_TE$Sum_Opti <- sums_per_row_TE
+
+#Get the total of all codons used. 
+output_df_TE$Total_codon <- rowSums(output_df_TE[,1:64])
+
+#FOP score
+output_df_TE$FOP_score <- output_df_TE$Sum_Opti/output_df_TE$Total_codon
+
+output_df_TE$ORF_type <- "Top20TE"
+
+output_df_TE$program <- "None"
+
+outputTE <- output_df_TE[,c(66,69:71)]
+colnames(outputTE) <- c("ORF_ID", "FOP_score", "ORF_type", "program")
+
+```
+
+
+```{r}
+
+RCdata <- read_csv(here("NAseqs", "Ribocode_NAseqs.csv"))
+
+RC_uORF <- RCdata %>% filter(ORF_type == "uORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+RC_dORF <- RCdata %>% filter(ORF_type == "dORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+RC_novel <- RCdata %>% filter(ORF_type == "novel") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+RC_anno <- RCdata %>% filter(ORF_type == "annotated") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+#I have a list of optimal codons. Now I can use this to calculate the FOP score as per the paper listed above. This is #optimal codons in seq/#total codons used.
+
+# Apply the function to calculate codons to each sequence in the dataframe and create a list of resulting dataframes
+output_list_uORF_R <- lapply(RC_uORF$extracted_sequence, codon_count_table)
+output_list_dORF_R <- lapply(RC_dORF$extracted_sequence, codon_count_table)
+output_list_novel_R <- lapply(RC_novel$extracted_sequence, codon_count_table)
+output_list_anno_R <- lapply(RC_anno$extracted_sequence, codon_count_table)
+
+# Combine the list of dataframes into a single dataframe
+output_df_uORF_RC <- do.call(rbind, output_list_uORF_R)
+output_df_uORF_RC <- left_join(output_df_uORF_RC, RC_uORF, by = c("sequence" = "extracted_sequence"))
+
+output_df_dORF_RC <- do.call(rbind, output_list_dORF_R)
+output_df_dORF_RC <- left_join(output_df_dORF_RC, RC_dORF, by = c("sequence" = "extracted_sequence"))
+
+output_df_novel_RC <- do.call(rbind, output_list_novel_R)
+output_df_novel_RC <- left_join(output_df_novel_RC, RC_novel, by = c("sequence" = "extracted_sequence"))
+
+output_df_anno_RC <- do.call(rbind, output_list_anno_R)
+output_df_anno_RC <- left_join(output_df_anno_RC, RC_anno, by = c("sequence" = "extracted_sequence"))
+
+
+#Optimal codons used/Total codons used.
+  #So essentially I will have a list of codons that are optimal and a list of those that aren't and then each ORF will get a FOP score. 
+
+#get total of the optimal for the dataset. 
+
+# Call the function to get the sum of values in specified columns for each row
+sums_per_row_U_RC <- sum_values_in_Opticolumns(output_df_uORF_RC, most_abundant_codons$codon)
+sums_per_row_D_RC <- sum_values_in_Opticolumns(output_df_dORF_RC, most_abundant_codons$codon)
+sums_per_row_N_RC <- sum_values_in_Opticolumns(output_df_novel_RC, most_abundant_codons$codon)
+sums_per_row_A_RC <- sum_values_in_Opticolumns(output_df_anno_RC, most_abundant_codons$codon)
+
+# Add the sum as a new column in the data frame
+output_df_uORF_RC$Sum_Opti <- sums_per_row_U_RC
+output_df_dORF_RC$Sum_Opti <- sums_per_row_D_RC
+output_df_novel_RC$Sum_Opti <- sums_per_row_N_RC
+output_df_anno_RC$Sum_Opti <- sums_per_row_A_RC
+
+#Get the total of all codons used. 
+output_df_uORF_RC$Total_codon <- rowSums(output_df_uORF_RC[,1:64])
+output_df_dORF_RC$Total_codon <- rowSums(output_df_dORF_RC[,1:64])
+output_df_novel_RC$Total_codon <- rowSums(output_df_novel_RC[,1:64])
+output_df_anno_RC$Total_codon <- rowSums(output_df_anno_RC[,1:64])
+
+#FOP score
+output_df_uORF_RC$FOP_score <- output_df_uORF_RC$Sum_Opti/output_df_uORF_RC$Total_codon
+output_df_dORF_RC$FOP_score <- output_df_dORF_RC$Sum_Opti/output_df_dORF_RC$Total_codon
+output_df_novel_RC$FOP_score <- output_df_novel_RC$Sum_Opti/output_df_novel_RC$Total_codon
+output_df_anno_RC$FOP_score <- output_df_anno_RC$Sum_Opti/output_df_anno_RC$Total_codon
+
+
+output_df_uORF_RC$ORF_type <- "uORF"
+output_df_dORF_RC$ORF_type <- "dORF"
+output_df_novel_RC$ORF_type <- "novel"
+output_df_anno_RC$ORF_type <- "annotated"
+
+output_df_uORF_RC$program <- "Ribocode"
+output_df_dORF_RC$program <- "Ribocode"
+output_df_novel_RC$program <- "Ribocode"
+output_df_anno_RC$program <- "Ribocode"
+
+FOPtable <- rbind(outputTE, output_df_uORF_RC[,c(66,69:71)], output_df_dORF_RC[,c(66,69:71)], output_df_novel_RC[,c(66,69:71)], output_df_anno_RC[,c(66,69:71)])
+```
+
+
+
+```{r}
+OQdata <- read_csv(here("NAseqs", "ORFquant_NAseqs.csv"))
+
+OQdata <- left_join(OQdata, AllORFs)
+
+OQ_uORF <- OQdata %>% filter(ORF_type == "uORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+OQ_dORF <- OQdata %>% filter(ORF_type == "dORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+OQ_novel <- OQdata %>% filter(ORF_type == "novel") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+OQ_anno <- OQdata %>% filter(ORF_type == "annotated") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+OQ_other <- OQdata %>% filter(ORF_type == "other") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
+
+#I have a list of optimal codons. Now I can use this to calculate the FOP score as per the paper listed above. This is #optimal codons in seq/#total codons used.
+
+# Apply the function to calculate codons to each sequence in the dataframe and create a list of resulting dataframes
+output_list_uORF_O <- lapply(OQ_uORF$extracted_sequence, codon_count_table)
+output_list_dORF_O <- lapply(OQ_dORF$extracted_sequence, codon_count_table)
+output_list_novel_O <- lapply(OQ_novel$extracted_sequence, codon_count_table)
+output_list_anno_O <- lapply(OQ_anno$extracted_sequence, codon_count_table)
+output_list_other_O <- lapply(OQ_other$extracted_sequence, codon_count_table)
+
+# Combine the list of dataframes into a single dataframe
+output_df_uORF_OQ <- do.call(rbind, output_list_uORF_O)
+output_df_uORF_OQ <- left_join(output_df_uORF_OQ, OQ_uORF, by = c("sequence" = "extracted_sequence"))
+
+output_df_dORF_OQ <- do.call(rbind, output_list_dORF_O)
+output_df_dORF_OQ <- left_join(output_df_dORF_OQ, OQ_dORF, by = c("sequence" = "extracted_sequence"))
+
+output_df_novel_OQ <- do.call(rbind, output_list_novel_O)
+output_df_novel_OQ <- left_join(output_df_novel_OQ, OQ_novel, by = c("sequence" = "extracted_sequence"))
+
+output_df_anno_OQ <- do.call(rbind, output_list_anno_O)
+output_df_anno_OQ <- left_join(output_df_anno_OQ, OQ_anno, by = c("sequence" = "extracted_sequence"))
+
+output_df_other_OQ <- do.call(rbind, output_list_other_O)
+output_df_other_OQ <- left_join(output_df_other_OQ, OQ_other, by = c("sequence" = "extracted_sequence"))
+
+#Optimal codons used/Total codons used.
+  #So essentially I will have a list of codons that are optimal and a list of those that aren't and then each ORF will get a FOP score. 
+
+#get total of the optimal for the dataset. 
+
+# Call the function to get the sum of values in specified columns for each row
+sums_per_row_U_OQ <- sum_values_in_Opticolumns(output_df_uORF_OQ, most_abundant_codons$codon)
+sums_per_row_D_OQ <- sum_values_in_Opticolumns(output_df_dORF_OQ, most_abundant_codons$codon)
+sums_per_row_N_OQ <- sum_values_in_Opticolumns(output_df_novel_OQ, most_abundant_codons$codon)
+sums_per_row_A_OQ <- sum_values_in_Opticolumns(output_df_anno_OQ, most_abundant_codons$codon)
+sums_per_row_O_OQ <- sum_values_in_Opticolumns(output_df_other_OQ, most_abundant_codons$codon)
+
+# Add the sum as a new column in the data frame
+output_df_uORF_OQ$Sum_Opti <- sums_per_row_U_OQ
+output_df_dORF_OQ$Sum_Opti <- sums_per_row_D_OQ
+output_df_novel_OQ$Sum_Opti <- sums_per_row_N_OQ
+output_df_anno_OQ$Sum_Opti <- sums_per_row_A_OQ
+output_df_other_OQ$Sum_Opti <- sums_per_row_O_OQ
+
+#Get the total of all codons used. 
+output_df_uORF_OQ$Total_codon <- rowSums(output_df_uORF_OQ[,1:64])
+output_df_dORF_OQ$Total_codon <- rowSums(output_df_dORF_OQ[,1:64])
+output_df_novel_OQ$Total_codon <- rowSums(output_df_novel_OQ[,1:64])
+output_df_anno_OQ$Total_codon <- rowSums(output_df_anno_OQ[,1:64])
+output_df_other_OQ$Total_codon <- rowSums(output_df_other_OQ[,1:64])
+
+#FOP score
+output_df_uORF_OQ$FOP_score <- output_df_uORF_OQ$Sum_Opti/output_df_uORF_OQ$Total_codon
+output_df_dORF_OQ$FOP_score <- output_df_dORF_OQ$Sum_Opti/output_df_dORF_OQ$Total_codon
+output_df_novel_OQ$FOP_score <- output_df_novel_OQ$Sum_Opti/output_df_novel_OQ$Total_codon
+output_df_anno_OQ$FOP_score <- output_df_anno_OQ$Sum_Opti/output_df_anno_OQ$Total_codon
+output_df_other_OQ$FOP_score <- output_df_other_OQ$Sum_Opti/output_df_other_OQ$Total_codon
+
+
+output_df_uORF_OQ$ORF_type <- "uORF"
+output_df_dORF_OQ$ORF_type <- "dORF"
+output_df_novel_OQ$ORF_type <- "novel"
+output_df_anno_OQ$ORF_type <- "annotated"
+output_df_other_OQ$ORF_type <- "other"
+
+output_df_uORF_OQ$program <- "ORFquant"
+output_df_dORF_OQ$program <- "ORFquant"
+output_df_novel_OQ$program <- "ORFquant"
+output_df_anno_OQ$program <- "ORFquant"
+output_df_other_OQ$program <- "ORFquant"
+
+FOPtable <- rbind(FOPtable, output_df_uORF_OQ[,c(66,69:71)], output_df_dORF_OQ[,c(66,69:71)], output_df_novel_OQ[,c(66,69:71)], output_df_anno_OQ[,c(66,69:71)], output_df_other_OQ[,c(66,69:71)])
+
+```
+
+
+
+```{r}
+
+FOPtable$ORF_type <- factor(FOPtable$ORF_type, order = TRUE, levels =c("Top20TE", "annotated", "novel", "uORF", 'dORF', 'other'))
+
+levels(FOPtable$ORF_type)
+
+FOPtable <- left_join(FOPtable, AllORFs, by = c("ORF_ID"))
+
+FOPtable <- FOPtable %>% select(ORF_ID, FOP_score, ORF_type.x, program.x, AAseq) %>% unique()
+
+colors <- c("#551A8B", "#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+
+p_FOPscore <- ggviolin(data = FOPtable %>% filter(ORF_type.x != "other"), x = "ORF_type.x", y = "FOP_score", fill = "ORF_type.x", trim = F, add=c("mean")) + ylab("FOP_score") + xlab("") + theme_minimal() + scale_fill_manual(values = colors)
+
+p_FOPscore
+
+ggsave(plot = p_FOPscore, filename = here("plots", "FOPscore.pdf"), width = 6, height = 4)
+
+
+FOPtable %>% filter(ORF_type.x == "annotated") %>% pull(FOP_score) %>% mean()
+FOPtable %>% filter(ORF_type.x == "Top20TE") %>% pull(FOP_score) %>% mean()
+
+
+#Wilcoxon rank sum test since data is non-parametric.
+
+kruskal.test(FOP_score ~ ORF_type.x, data = FOPtable)
+
+data2 <- FOPtable 
+pairwise.wilcox.test(data2$FOP_score, data2$ORF_type.x,
+                 p.adjust.method = "BH")
+
+colors <- c("#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+p_FOPscore_program <- ggviolin(data = FOPtable %>% filter(ORF_type.x != "other" & program.x != "None"), x = "program.x", y = "FOP_score", fill = "ORF_type.x",
+trim = F, add=c("mean")) + facet_wrap(~ORF_type.x, nrow = 1) +
+  ylab("FOP_score") +
+  xlab("") + scale_fill_manual(values = colors) +
+  theme_minimal()
+
+ggsave(plot = p_FOPscore_program, filename = here("plots", "FOPscore_program.pdf"), width = 5, height = 3)
+
+data2 <- FOPtable %>% filter(ORF_type.x == "annotated")
+pairwise.wilcox.test(data2$FOP_score, data2$program.x,
+                 p.adjust.method = "BH")
+
+data2 <- FOPtable %>% filter(ORF_type.x == "novel")
+pairwise.wilcox.test(data2$FOP_score, data2$program.x,
+                 p.adjust.method = "BH")
+
+data2 <- FOPtable %>% filter(ORF_type.x == "uORF")
+pairwise.wilcox.test(data2$FOP_score, data2$program.x,
+                 p.adjust.method = "BH")
+
+data2 <- FOPtable %>% filter(ORF_type.x == "dORF")
+pairwise.wilcox.test(data2$FOP_score, data2$program.x,
+                 p.adjust.method = "BH")
+
+
+```
+
+
