@@ -20,6 +20,7 @@ library(scales)
 library(ggthemes)
 library(preprocessCore)
 library(dplyr)
+library(writexl)
 ```
 
 
@@ -87,7 +88,7 @@ TEdata <- TEdata[!is.infinite(abs(rowSums(TEdata[,10]))), ]
 
 TEdata <- left_join(TEdata, geneInfo) #%>% filter(biotype == "protein_coding")
 
-#writexl::write_xlsx(TEdata,  here("output", "TPM_TEdata.xlsx")) #saving the list of GSEA values for this directed enrichment. 
+#writexl::write_xlsx(TEdata,  here("output", "TPM_TEdata.xlsx")) #saving the normalized TE calculations
 
 #want to be able to compare the TE of all genes to those of specific biotypes. The expectation is that lincRNAs will have a lower TE since they are not traditionally translated. 
 TEdata2 <- TEdata %>%
