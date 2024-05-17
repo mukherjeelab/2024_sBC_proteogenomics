@@ -13,11 +13,27 @@ library(tidyverse)
 library(here)
 library(ggplot2)
 library(ggpubr)
+library(apeglm)
 library(clusterProfiler)
 ```
 
 
-# Load Data
+```{r}
+## Summary of RMD contents
+#In this file I am characterizing the RNA-seq data from GFP +/- sorted cells. The data here is used in Figure 1 and Supplemental Figure 1.  
+
+#1.Loading annotation files and metadata
+
+#2. Determine differential expression with DESeq2
+
+#3. GSEA analysis of GFP enriched genes
+
+#4. Plotting top 40 GFP enriched/depleted genes
+```
+
+
+# 1.Loading annotation files and metadata
+
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
 #grabbing and creating necessary files
@@ -39,9 +55,10 @@ metadata <- data.frame(genotype = c("GFPyes", "GFPyes","GFPyes","GFPno","GFPyes"
 ```
 
 
-# DESeq2 on GFP RNA-seq
+# 2. Determine differential expression with DESeq2
 
-```{r DEseq, message=FALSE, warning=FALSE, echo=FALSE}
+
+```{r DEseq2, message=FALSE, warning=FALSE, echo=FALSE}
 #Goal here is to see what transcripts are different between the GFP +/- RNA-seq. The hypothesis is that the GFP+ is enriched for beta-cell transcripts. 
 
 metadata_rna <- metadata %>% filter(type == "rna")
@@ -53,7 +70,7 @@ ddsMat_rna <- DESeq(ddsMat_rna)
 
 res_rna <- results(ddsMat_rna, name=resultsNames(ddsMat_rna)[2])
 
-#this lfcShrink helps to reduce background noise? A conservative approach.
+#this lfcShrink helps to reduce background noise. A conservative approach.
 res_rna <- lfcShrink(dds = ddsMat_rna, res = res_rna, coef = resultsNames(ddsMat_rna)[2]) %>% 
   as.data.frame %>% 
   rownames_to_column(var = "gene_id") %>%
@@ -65,14 +82,13 @@ sigGenes <- res_rna[which(res_rna$padj<0.05), ] %>%
   plyr::mutate(rna=case_when(log2FoldChange > 0 ~ "higher GFP_positive",
                       T ~ "lower GFP_negative")) %>% as.data.frame()
 
-sigGenes <- sigGenes[order(sigGenes$log2FoldChange),]
+sigGenes <- sigGenes[order(sigGenes$log2FoldChange),] #ordering by lfc
 
-write_csv(sigGenes, here("output", "GFPenrichedList.csv"))
-
-write_csv(as.data.frame(allCountsNorm) %>% rownames_to_column("gene_id"), here("output", "allCounts_CPMnorm.csv"))
-
-
+write_csv(sigGenes, here("output", "GFPenrichedList.csv")) #saving list
 ```
+
+
+# 3. GSEA analysis of GFP enriched genes
 
 
 ```{r GSEA, message=FALSE, warning=FALSE, echo=FALSE}
@@ -102,14 +118,16 @@ edo2 <- GSEA(geneList = DEgeneList, pAdjustMethod = "fdr",
 tmp2 <- edo2@result
 tmp2
 
-#writexl::write_xlsx(tmp2,  here("1_WTvKO", "output", "WTvKO_GSEAoverlapStats.xlsx")) #saving the list of GSEA values for this directed enrichment. 
-
 GSEAplotGeneSet <- gseaplot(edo2, geneSetID = 1, by = "runningScore", title = edo2$Description[1], color.line = "purple4")
 
 GSEAplotGeneSet
 
-ggsave(plot = GSEAplotGeneSet, filename = here("plots", "GFP_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+ggsave(plot = GSEAplotGeneSet, filename = here("plots", "Figure1", "GFP_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 ```
+
+
+# 4. Plotting top 40 GFP enriched/depleted genes
+
 
 ```{r top DE genes,  message=FALSE, warning=FALSE, echo=FALSE}
 #use res_rna
@@ -119,7 +137,7 @@ GFPenriched <- res_rna %>% filter(biotype == "protein_coding" & padj < 0.05) %>%
 #grab the top 40 
 GFPenrichedt40 <- GFPenriched[c(768:807),]
 
-#and bottom 25
+#and bottom 40
 GFPenrichedB40 <- GFPenriched[c(1:40),]
 
 #make bar plot (consider log on y axis?)
@@ -133,7 +151,7 @@ GFPt40_barPlot <- ggbarplot(GFPenrichedt40, x = "symbol", y = "log2FoldChange",
 
 GFPt40_barPlot
 
-ggsave(plot = GFPt40_barPlot, filename = here::here("plots", "GFP40enriched_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+ggsave(plot = GFPt40_barPlot, filename = here::here("plots", "Figure1", "Supp_GFP40enriched_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 
 GFPB40_barPlot <- ggbarplot(GFPenrichedB40, x = "symbol", y = "log2FoldChange",
           sort.val = "desc",           # Sort the value in ascending order
@@ -145,8 +163,6 @@ GFPB40_barPlot <- ggbarplot(GFPenrichedB40, x = "symbol", y = "log2FoldChange",
 
 GFPB40_barPlot
 
-ggsave(plot = GFPB40_barPlot, filename = here::here("plots", "GFP40dep_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+ggsave(plot = GFPB40_barPlot, filename = here::here("plots","Figure1", "Supp_GFP40dep_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 ```
-
-
 
