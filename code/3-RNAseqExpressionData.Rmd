@@ -184,7 +184,7 @@ qc_pca <- ggplot(pca_plot_data, aes(x=PC1, y=PC2, color=type, shape=sample)) +
 
 qc_pca
 
-#ggsave(plot = qc_pca, filename = here("plots", "qc_PCAplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+ggsave(plot = qc_pca, filename = here("plots", "NotPublished", "qc_PCAplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 ```
 
 
@@ -217,7 +217,7 @@ genes_to_kill <- unique(c(blacklist_smRNA_ID,nonpolyA_ID))
 genes_to_kill_tf <- as.data.frame(genes_to_kill)
 genes_to_kill_tf <- left_join(genes_to_kill_tf, tx2gene, by = c("genes_to_kill" = "gene_id")) %>% dplyr::select(transcript_id) %>% unique()
 
-#write_csv(as.data.frame(genes_to_kill_tf), here("output", "genesKill_T.csv")) #used this to filter my quant.sf files to the filteredquant.sf files used above. 
+write_csv(as.data.frame(genes_to_kill_tf), here("accessories", "genesKill_T.csv")) #used this to filter my quant.sf files to the filteredquant.sf files used above. 
 
 
 allCounts <- myTxi$counts %>%
