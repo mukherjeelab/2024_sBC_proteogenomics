@@ -1,5 +1,5 @@
 ---
-title: "14-CodonBias"
+title: "12-CodonBias"
 author: "Kathryn Walters"
 date: "2023-07-25"
 output: html_document
@@ -24,10 +24,14 @@ library(ggpubr)
 library(scales)
 library(readxl)
 library(stringr)
-# library(conflicted)
-# 
-# conflict_prefer("here", "here")
-# conflict_prefer("filter", "dplyr")
+```
+
+
+```{r}
+## Summary of RMD contents
+#In this file I am ... The plots here are used in Figure 4 and Supplementary Figure 4. 
+
+#1. 
 ```
 
 

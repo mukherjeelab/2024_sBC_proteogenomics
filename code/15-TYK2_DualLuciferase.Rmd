@@ -1,5 +1,5 @@
 ---
-title: "KAB134_TYK2_DL"
+title: "15-TYK2_DualLuciferase"
 author: "Kathryn Walters"
 date: "2023-12-02"
 output: html_document
@@ -17,6 +17,17 @@ library(gridExtra) # allows arranging of plots (rows/columns...)
 library(splitstackshape)
 library(ggpubr)
 ```
+
+
+```{r}
+## Summary of RMD contents
+#In this file I am .... The plots here are used in Figure 4 and Supplementary Figure 4. 
+
+#1. 
+
+```
+
+
 
 
 ## Experiment #1
