@@ -39,7 +39,7 @@ library(ggthemes)
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
 AllORFs <- read_csv(here::here("output", "GeneCollapsedORFs_AllPrograms.csv"))
-collapseORFs <- read_csv(here::here("output", "final_collapsedORFsList.csv"))
+collapsedORFlist <- read_csv(here::here("output", "final_collapsedORFsList.csv"))
 
 
 #getting RiboCode list of ORFs found in sBC proteomics
@@ -61,8 +61,6 @@ tx2gene <- geneInfo[,c(2,1)]
 
 
 ```{r per software, message=FALSE, warning=FALSE, echo=FALSE}
-
-collapsedORFlist <- read_csv(here("output", "final_collapsedORFsList.csv"))
 
 #grabbing only annotated genes
 RC_anno <- AllORFs %>% filter(ORF_type == "annotated" & program == "Ribocode")
@@ -108,8 +106,8 @@ p_anno_proteoSupport_count
 
 ```{r Overlap between programs, message=FALSE, warning=FALSE}
 #grabbing geneIDs associated with each program's already filtered annotated genes.
-set1 <- as.matrix(RC_anno)[,4]
-set3 <- as.matrix(OQ_anno)[,4]
+set1 <- as.matrix(RC_anno)[,2]
+set3 <- as.matrix(OQ_anno)[,2]
 
 listALL <- list(RiboCode=set1, ORFquant = set3)
 
@@ -123,19 +121,24 @@ riboOnly <- unique.partition[3,4] %>% unlist()
 ORFquantOnly <- unique.partition[2,4] %>% unlist()
 
 #for each list, do they have proteomic support?
-proteoList <- rbind(RC_anno[,c(4,6)], OQ_anno[,c(4,6)]) %>% unique()
+proteoList <- rbind(RC_anno[,c(2,6)], OQ_anno[,c(2,6)]) %>% unique()
+
+#if that sequence ever had protein support, it is counted as protein support.
+proteoList <- proteoList %>%
+  group_by(AAseq) %>%
+  summarize(protein = if_else(any(protein == "Yes"), "Yes", "No"), .groups = "drop")
 
 #are they found in one dataset or both?
-proteoList <- proteoList %>% dplyr::mutate(Venndiagram = case_when(gene_id %in% combined ~ 'Both', gene_id %in% riboOnly ~ 'Ribocode', gene_id %in% ORFquantOnly ~ "ORFquant"))
+proteoList <- proteoList %>% dplyr::mutate(Venndiagram = case_when(AAseq %in% combined ~ 'Both', AAseq %in% riboOnly ~ 'Ribocode', AAseq %in% ORFquantOnly ~ "ORFquant"))
 
 #formatting to make a bar plot.
-barplotInfoVenn <- proteoList %>% group_by(Venndiagram) %>% select(protein) %>% table() %>% as.data.frame()
+barplotInfoVenn <- proteoList %>% group_by(Venndiagram) %>% dplyr::select(protein) %>% table() %>% as.data.frame()
 
 #creating a barplot of the percent frequency of a gene having proteomic support if it was called by one software or both.
 p_anno_proteoSupport_percent_overlap <- ggplot(barplotInfoVenn, aes(fill=protein, y=Freq, x=Venndiagram)) + geom_bar(position="fill", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("")
 
 
-ggsave(plot = p_anno_proteoSupport_percent_overlap, filename = here("plots", "Figure2", "Fig2F_annoProteinSupport_percent.pdf"), width = 4, height = 3)
+#ggsave(plot = p_anno_proteoSupport_percent_overlap, filename = here("plots", "Figure2", "Fig2F_annoProteinSupport_percent.pdf"), width = 4, height = 3)
 
 
 #can look at absolute counts also. However, this data is better viewed as venn diagram I think so this bar graph was not included in figures. 
@@ -148,7 +151,7 @@ ggVenn <- ggVennDiagram(listALL, edge_color = "black", label = "count", label_al
 
 ggVenn
 
-ggsave(plot = ggVenn, filename = here("plots","Figure2", "Fig2E_annoORFs_Venndiagram.pdf"), width = 4, height = 3)
+ggsave(plot = ggVenn, filename = here("plots","Figure4", "Fig4B_annoORFs_Venndiagram.pdf"), width = 4, height = 3)
 
 ```
 

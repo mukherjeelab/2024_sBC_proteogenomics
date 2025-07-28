@@ -49,8 +49,6 @@ library(preprocessCore)
 #8. RNA expression
 
 #9. Ribosome Occupancy - Translational Efficiency
-
-#10. Proteomic Intensity
 ```
 
 
@@ -93,12 +91,16 @@ proteomicsOQ$Average_Intensity <- (proteomicsOQ$Unique_Intensity_1 + proteomicsO
 
 ```{r per software, message=FALSE, warning=FALSE, echo=FALSE}
 #grabbing only NON-annotated genes
-NOTannoORFs <- AllORFs %>% filter(ORF_type != "annotated" & ORF_type != "other")
+NOTannoORFs <- AllORFs %>% filter(ORF_type != "annotated")
+NOTannoORFs_NoProgram <- collapseORFs %>% filter(ORF_type != "annotated")
 
 RC_NotAnno <- NOTannoORFs %>% filter(program == "Ribocode")
 OQ_NotAnno <- NOTannoORFs %>% filter(program == "ORFquant")
 
+```
 
+
+```{r per software, message=FALSE, warning=FALSE, echo=FALSE}
 orfTable <- AllORFs %>% group_by(program) %>% select(ORF_type) %>% table() %>% as.data.frame()
 
 orfTable$ORF_type <- factor(orfTable$ORF_type, order = TRUE, levels =c('other', 'dORF', "uORF", "novel", "annotated"))
@@ -110,7 +112,7 @@ p_nuORFs_percent <- ggplot(orfTable %>% filter(ORF_type != "annotated"), aes(fil
 
 p_nuORFs_percent
 
-#ggsave(plot = p_nuORFs_percent, filename = here("plots", "Figure3", "Fig3C_nuORFs_percent.pdf"), width = 4, height = 3)
+#ggsave(plot = p_nuORFs_percent, filename = here("plots", "Figure4", "Fig4D_nuORFs_percent.pdf"), width = 4, height = 3)
 
 ```
 
@@ -129,31 +131,8 @@ p_nuORFoverlap <- ggVennDiagram(listALL, edge_color = "black", label = "count", 
 
 p_nuORFoverlap
 
-#ggsave(plot = p_nuORFoverlap, filename = here("plots", "Figure3", "Fig3B_nuORFoverlap_venndiagram.pdf"), width = 4, height = 3)
+#ggsave(plot = p_nuORFoverlap, filename = here("plots", "Figure4", "Fig4C_nuORFoverlap_venndiagram.pdf"), width = 4, height = 3)
 
-```
-
-
-#Needed??
-
-```{r message=FALSE, warning=FALSE}
-Top20TE <- read_csv(here::here("NAseqs", "Top20TE_NAseqs.csv"))
-
-#ORF_ID, AA_seq, ORF_type, gene_id, program, protein - AllORFs
-#column 4, 9, "Top20TE", 3, "None", "Yes"
-
-Top20TE <- Top20TE[,c(4,9,3)]
-colnames(Top20TE) <- c("ORF_ID", "AAseq", "gene_id")
-
-Top20TE$ORF_type <- "Top20TE"
-Top20TE$program <- "None"
-Top20TE$protein <- "Yes"
-
-Top20TE <- Top20TE %>% select("ORF_ID", "AAseq", "ORF_type", "gene_id", "program", "protein")
-
-colnames(Top20TE)
-colnames(AllORFs)
-AllORFs <- rbind(AllORFs, Top20TE)
 ```
 
 
@@ -166,10 +145,15 @@ AllORFs <- rbind(AllORFs, Top20TE)
 #combine the list of identified genes from both programs
 allproteomics <- rbind(proteomicsRC, proteomicsOQ)
 
+AllORFs_NP <- collapseORFs %>% dplyr::mutate(protein = case_when(ORF_ID %in% allproteomics$ORF_ID ~ 'Yes', !(ORF_ID %in% allproteomics$ORF_ID) ~ 'No'))
+
+
 AllORFs <- AllORFs %>% dplyr::mutate(protein = case_when(ORF_ID %in% allproteomics$ORF_ID ~ 'Yes', !(ORF_ID %in% allproteomics$ORF_ID) ~ 'No'))
-AllORFs$protein %>% table()
+
 
 writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered.xlsx"))
+writexl::write_xlsx(AllORFs_NP, here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed.xlsx"))
+
 
 tableProteomicSupport <- AllORFs %>% group_by(ORF_type, program) %>% select(protein) %>% table() %>% as.data.frame()
 
@@ -185,25 +169,24 @@ p_nuORF_proteoSupport_percent
 
 #Now let's collapse the programs and just look in general. 
 
-tableProteomicSupport_collapsed <- AllORFs %>% group_by(ORF_type) %>% select(protein) %>% table() %>% as.data.frame()
+tableProteomicSupport_collapsed <- AllORFs_NP %>% group_by(ORF_type) %>% select(protein) %>% table() %>% as.data.frame()
 
-tableProteomicSupport_collapsed$ORF_type <- factor(tableProteomicSupport_collapsed$ORF_type, order = TRUE, levels =c('novel', 'uORF', "dORF", "other"))
+tableProteomicSupport_collapsed$ORF_type <- factor(tableProteomicSupport_collapsed$ORF_type, order = TRUE, levels =c("annotated", 'novel', 'uORF', "dORF", "other"))
 levels(tableProteomicSupport_collapsed$ORF_type)
 
-p_nuORF_proteoSupport_percent_collapsed <- ggplot(tableProteomicSupport_collapsed %>% filter(ORF_type != "annotated" & ORF_type != "other"), aes(fill=protein, y=Freq, x=ORF_type)) + 
+p_nuORF_proteoSupport_percent_collapsed <- ggplot(tableProteomicSupport_collapsed %>% filter(ORF_type != "other"), aes(fill=protein, y=Freq, x=ORF_type)) + 
     geom_bar(position="fill", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 p_nuORF_proteoSupport_percent_collapsed
 
 #ggsave(plot = p_nuORF_proteoSupport_percent_collapsed, filename = here("plots", "Figure3", "Fig3G_nuORFProteinSupport_percent_collapsed.pdf"), width = 5, height = 3)
 
-p_nuORF_proteoSupport_count <- ggplot(tableProteomicSupport %>% filter(ORF_type != "annotated" & ORF_type != "other"), aes(fill=protein, y=Freq, x=program)) + 
-    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Count") + xlab("") +
-  facet_grid(~ ORF_type) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+p_nuORF_proteoSupport_count <- ggplot(tableProteomicSupport_collapsed %>% filter(ORF_type != "annotated" & ORF_type != "other"), aes(fill=protein, y=Freq, x=ORF_type)) + 
+    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Count") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 p_nuORF_proteoSupport_count
 
-#ggsave(plot = p_nuORF_proteoSupport_count, filename = here("plots", "Figure3", "Supp3D_nuORFProteinSupport_counts.pdf"), width = 5, height = 3)
+#ggsave(plot = p_nuORF_proteoSupport_count, filename = here("plots", "Figure4", "Supp4F_nuORFProteinSupport_counts.pdf"), width = 5, height = 3)
 ```
 
 
@@ -213,14 +196,19 @@ p_nuORF_proteoSupport_count
 ```{r nuORF length, message=FALSE, warning=FALSE}
 
 AllORFs$nchar <- nchar(AllORFs$AAseq)
+AllORFs_NP$nchar <- nchar(AllORFs_NP$AAseq)
 
 AllORFs$ORF_type <- factor(AllORFs$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
+AllORFs_NP$ORF_type <- factor(AllORFs_NP$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
 
 AllORFs$protein <- factor(AllORFs$protein, order = TRUE, levels =c('Yes', 'No'))
+AllORFs_NP$protein <- factor(AllORFs_NP$protein, order = TRUE, levels =c('Yes', 'No'))
 
 colors <- c("#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
 
 AllORFs$charLog <- log10(AllORFs$nchar)
+AllORFs_NP$charLog <- log10(AllORFs_NP$nchar)
+
 
 p_nuORF_lengthAA_anno2 <- ggviolin(AllORFs %>% filter(ORF_type != "other" & ORF_type != "Top20TE"), y="nchar", x="program", fill = "ORF_type", trim = F, add=c("mean"))+ theme_minimal() + scale_fill_manual(values = colors) + ylab("ORF Length - AA") + xlab("") + facet_grid( ~ ORF_type) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_y_continuous(trans="log10",
     breaks = trans_breaks("log10", function(x) 10^x),
@@ -229,7 +217,7 @@ p_nuORF_lengthAA_anno2 <- ggviolin(AllORFs %>% filter(ORF_type != "other" & ORF_
 
 p_nuORF_lengthAA_anno2
 
-p_nuORF_lengthAA_anno <- ggviolin(AllORFs %>% filter(ORF_type != "other"), y="nchar", x="ORF_type", fill = "ORF_type", trim = F, add=c("mean"))+ theme_minimal() + scale_fill_manual(values = colors) + ylab("ORF Length - AA") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_y_continuous(trans="log10",
+p_nuORF_lengthAA_anno <- ggviolin(AllORFs_NP %>% filter(ORF_type != "other"), y="nchar", x="ORF_type", fill = "ORF_type", trim = F, add=c("mean"))+ theme_minimal() + scale_fill_manual(values = colors) + ylab("ORF Length - AA") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_y_continuous(trans="log10",
     breaks = trans_breaks("log10", function(x) 10^x),
     labels = trans_format("log10", math_format(10^.x))) +
   annotation_logticks(sides = "l") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
@@ -237,14 +225,14 @@ p_nuORF_lengthAA_anno <- ggviolin(AllORFs %>% filter(ORF_type != "other"), y="nc
 p_nuORF_lengthAA_anno
 
 
-#ggsave(plot = p_nuORF_lengthAA_anno, filename = here("plots", "Figure3", "Fig3D_nuORF_length_anno.pdf"), width = 5, height = 4)
+#ggsave(plot = p_nuORF_lengthAA_anno, filename = here("plots", "Figure4", "Fig4F_nuORF_length_anno.pdf"), width = 5, height = 4)
 
 
 #Wilcoxon rank sum test since data is non-parametric. Tells difference between ORF types overall.
 
-kruskal.test(nchar ~ ORF_type, data = AllORFs)
+kruskal.test(nchar ~ ORF_type, data = AllORFs_NP)
 
-data2 <- AllORFs
+data2 <- AllORFs_NP
 pairwise.wilcox.test(data2$nchar, data2$ORF_type,
                  p.adjust.method = "BH")
 
@@ -340,6 +328,7 @@ TPMnormGFP <- TPMnormGFP[,c(1,4)]
 
 
 AllORFs <- left_join(AllORFs, TPMnormGFP)
+AllORFs_NP <- left_join(AllORFs_NP, TPMnormGFP)
 
 AllORFs_violin <- AllORFs %>% select(gene_id, ORF_type, GFP_avg, program, protein) %>% unique()
 
@@ -392,7 +381,7 @@ data2 %>% filter(GFP_avg > 0) %>%
 
 
 #collapsing the programs
-AllORFs_violin2 <- AllORFs %>% select(gene_id, ORF_type, GFP_avg, protein) %>% unique()
+AllORFs_violin2 <- AllORFs_NP %>% select(gene_id, ORF_type, GFP_avg, protein) %>% unique()
 
 AllORFs_violin2 %>% pull(ORF_type) %>% table()
 
@@ -413,9 +402,9 @@ p_violinNUORFrnaExpress
 
 #Wilcoxon rank sum test since data is non-parametric. Tells difference between ORF types overall.
 
-kruskal.test(GFP_avg ~ ORF_type, data = AllORFs)
+kruskal.test(GFP_avg ~ ORF_type, data = AllORFs_NP)
 
-data2 <- AllORFs
+data2 <- AllORFs_NP
 pairwise.wilcox.test(data2$GFP_avg, data2$ORF_type,
                  p.adjust.method = "BH")
 
@@ -447,9 +436,10 @@ TE_norm$log10_TE <- log10(TE_norm$TE)
 
 #TEdata2 <- TEdata[,c(1,8)]
 
+AllORFs_NP <- left_join(AllORFs_NP, TE_norm)
 AllORFs <- left_join(AllORFs, TE_norm)
 
-AllORFs_violin_ribo <- AllORFs %>% select(gene_id, ORF_type, TE, program, protein) %>% unique() %>% na.omit()
+AllORFs_violin_ribo <- AllORFs_NP %>% select(gene_id, ORF_type, TE, protein) %>% unique() %>% na.omit()
 
 AllORFs_violin_ribo$ORF_type <- factor(AllORFs_violin_ribo$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
 
@@ -480,111 +470,33 @@ pairwise.wilcox.test(data2$TE, data2$ORF_type,
 
 AllORFs_violin_ribo %>% group_by(ORF_type) %>% dplyr::summarise(mean(log10(TE)))
 
-#separating by program too, in case there is a difference. 
 
-p_violinNUORF_TE_program <- ggviolin(data = AllORFs_violin_ribo %>% filter(program != "None" & ORF_type != "other"), x = "program", y = "TE", fill = "ORF_type",
-trim = F, add=c("mean")) +
-  ylab("Normalized TE") +
-  xlab("") + facet_wrap(~ORF_type, nrow = 1) +
-  scale_y_continuous(trans="log10",
-    breaks = trans_breaks("log10", function(x) 10^x),
-    labels = trans_format("log10", math_format(10^.x)), limits = c(.01, 100)) +
-  theme_minimal() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + annotation_logticks(sides = "l") + scale_fill_manual(values = colors) 
-
-p_violinNUORF_TE_program
-
-
-data2 <- AllORFs %>% filter(ORF_type == "annotated")
-pairwise.wilcox.test(data2$TE, data2$program,
-                 p.adjust.method = "BH")
-
-data2 %>% filter(TE > 0) %>% 
-  group_by(program) %>%
-  summarise_at(vars(TE), list(name = mean))
-
-data2 <- AllORFs %>% filter(ORF_type == "novel")
-pairwise.wilcox.test(data2$TE, data2$program,
-                 p.adjust.method = "BH")
-
-data2 %>% filter(TE > 0) %>% 
-  group_by(program) %>%
-  summarise_at(vars(TE), list(name = mean))
-
-data2 <- AllORFs %>% filter(ORF_type == "uORF")
-pairwise.wilcox.test(data2$TE, data2$program,
-                 p.adjust.method = "BH")
-
-data2 %>% filter(TE > 0) %>% 
-  group_by(program) %>%
-  summarise_at(vars(TE), list(name = mean))
-
-data2 <- AllORFs %>% filter(ORF_type == "dORF")
-pairwise.wilcox.test(data2$TE, data2$program,
-                 p.adjust.method = "BH")
-
-data2 %>% filter(TE > 0) %>% 
-  group_by(program) %>%
-  summarise_at(vars(TE), list(name = mean))
+writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+writexl::write_xlsx(AllORFs_NP, here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
 
 ```
 
 
-# 10. Proteomic Intensity
+#Needed??
 
 
-```{r warning=FALSE, message=FALSE}
-#want to get a feel for the level of protein intensity/expression for each of the categories. Maybe the nuORFs were barely expressed. Plus, some categories, such as uORFs are more typically regulatory and thus should have an overall lower protein expression level. 
+```{r message=FALSE, warning=FALSE, include=FALSE}
+Top20TE <- read_csv(here::here("output", "Top20TE_NAseqs.csv"))
 
-AllORFs2 <- left_join(AllORFs, allproteomics) %>% na.omit() %>% filter(Average_Intensity > 0)
+#ORF_ID, AA_seq, ORF_type, gene_id, program, protein - AllORFs
+#column 4, 9, "Top20TE", 3, "None", "Yes"
 
-AllORFs2$ORF_type <- factor(AllORFs2$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
+Top20TE <- Top20TE[,c(4,9,3)]
+colnames(Top20TE) <- c("ORF_ID", "AAseq", "gene_id")
 
-AllORFs2$logValue <- log10(AllORFs2$Average_Intensity)
+Top20TE$ORF_type <- "Top20TE"
+Top20TE$program <- "None"
+Top20TE$protein <- "Yes"
 
-p_nuORF_proteomicIntensity <- ggviolin(data = AllORFs2 %>% filter(ORF_type != "other" & ORF_type != "Top20TE"), x = "ORF_type", y = "Average_Intensity", fill = "ORF_type",
-trim = F, add=c("mean")) +
-  ylab("Total Intensity") +
-  xlab("") +
-  scale_y_continuous(trans="log10",
-    breaks = trans_breaks("log10", function(x) 10^x),
-    labels = trans_format("log10", math_format(10^.x))) +
-  theme_minimal() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + annotation_logticks(sides = "l")+ scale_fill_manual(values = colors) 
+Top20TE <- Top20TE %>% select("ORF_ID", "AAseq", "ORF_type", "gene_id", "program", "protein")
 
-p_nuORF_proteomicIntensity
-
-#ggsave(plot = p_nuORF_proteomicIntensity, filename = here("plots", "Figure3", "Fig3H_nuORF_proteomicIntensity.pdf"), width = 6, height = 3)
-
-kruskal.test(Average_Intensity ~ ORF_type, data = AllORFs2)
-
-data2 <- AllORFs2
-pairwise.wilcox.test(data2$Average_Intensity, data2$ORF_type,
-                 p.adjust.method = "BH")
-
-
-
-data2 <- AllORFs2 %>% filter(ORF_type == "annotated")
-pairwise.wilcox.test(data2$Average_Intensity, data2$program,
-                 p.adjust.method = "BH")
-
-data2 <- AllORFs2 %>% filter(ORF_type == "novel")
-pairwise.wilcox.test(data2$Average_Intensity, data2$program,
-                 p.adjust.method = "BH")
-
-data2 <- AllORFs2 %>% filter(ORF_type == "uORF")
-pairwise.wilcox.test(data2$Average_Intensity, data2$program,
-                 p.adjust.method = "BH")
-
-AllORFs2 %>% filter(ORF_type == "uORF") %>%
-  group_by(program) %>%
-  summarise_at(vars(Average_Intensity), list(name = mean))
-
-data2 <- AllORFs2 %>% filter(ORF_type == "dORF")
-pairwise.wilcox.test(data2$Average_Intensity, data2$program,
-                 p.adjust.method = "BH")
-
-nuORFS_ALLdata <- read_csv(here("output", "AllORFs_nu_ALLDATA.csv"))
-
-nuORFS_ALLdata <- left_join(nuORFS_ALLdata, AllORFs2, by = "ORF_ID")
-
+colnames(Top20TE)
+colnames(AllORFs)
+AllORFs <- rbind(AllORFs, Top20TE)
 ```
 

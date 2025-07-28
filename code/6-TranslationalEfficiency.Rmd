@@ -90,7 +90,7 @@ TEdata <- left_join(TEdata, geneInfo) #%>% filter(biotype == "protein_coding")
 
 #writexl::write_xlsx(TEdata,  here("output", "TPM_TEdata.xlsx")) #saving the normalized TE calculations
 
-#want to be able to compare the TE of all genes to those of specific biotypes. The expectation is that lincRNAs will have a lower TE since they are not traditionally translated. 
+#want to be able to compare the TE of all genes to those of specific biotypes. The expectation is that lncRNAs will have a lower TE since they are not traditionally translated. 
 TEdata2 <- TEdata %>%
   mutate(BiotypeII = case_when(biotype == 'lincRNA' ~ as.character(biotype), biotype == 'protein_coding' ~ as.character(biotype), .default = 'other'))
 
@@ -115,7 +115,7 @@ statsData <- TEdata2 %>% filter(BiotypeII != "other")
 
 t.test(statsData %>% filter(BiotypeII == "protein_coding") %>% dplyr::select(log10_TE), statsData %>% filter(BiotypeII == "lincRNA") %>% dplyr::select(log10_TE), alternative = "greater", var.equal = FALSE)
 
-ggsave(plot = TEviolinDensity, filename = here::here("plots", "Figure2", "Fig2C_TE_violinDensity.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
+#ggsave(plot = TEviolinDensity, filename = here::here("plots", "Figure2", "Fig2C_TE_violinDensity.pdf"), device = "pdf", units = "in", width = 5, height = 4, dpi = 320)
 
 ```
 

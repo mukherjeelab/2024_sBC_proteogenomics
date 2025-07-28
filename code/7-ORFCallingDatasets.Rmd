@@ -52,6 +52,9 @@ library(tibble)
 #ribocode program output
 ribocode <- read.table(here("input", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsAll.txt"), sep = '\t', header = TRUE)
 
+ribocode %>% pull(ORF_type) %>% table()
+
+
 #ORFquant program output is an Rdata file and so you have to load the file and then extract the dataframe that you need from all the others. 
 load(here("input", "Output from ORFcalling Software", "Betacell_mergedBamsAligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
 
@@ -63,12 +66,14 @@ annotation = ORFquant_results$ORFs_tx$ORF_category_Tx,
 gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_tx$transcript_id, transcriptType = ORFquant_results$ORFs_tx$transcript_biotype, annotationII = ORFquant_results$ORFs_tx$ORF_category_Tx
 )
 
+ORFquant %>% pull(annotation) %>% table
+
 #ORFquant uses transcript ID but Ribocode uses geneID. I want to switch ORFquant to using geneID instead in order to combine. This creates a database that I will use later to do that. 
-ORFquant_IDswitch <- orfquant_minimal %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = FALSE) %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) %>% dplyr::select(id, ORF_ID)
+ORFquant_IDswitch <- orfquant_minimal %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = FALSE) %>% tidyr::unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) %>% dplyr::select(id, ORF_ID)
 colnames(ORFquant_IDswitch) <- c("ORF_ID_transcript", "ORF_ID_gene")
 
 #saving my database for ID switching. 
-write_csv(ORFquant_IDswitch, here("accessories", "ORFquant_IDswitchResource.csv"))
+#write_csv(ORFquant_IDswitch, here("accessories", "ORFquant_IDswitchResource.csv"))
 
 ```
 
@@ -104,7 +109,7 @@ metadata <- data.frame(
   sample=metadata$SampleID, genotype = metadata$Genotype,
   type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
           T ~ "rna")),
-  rep=factor(case_when(metadata$Treatment2 == "RepA" ~ "A",
+  rep=factor(case_when(metadata$Treatment2 == "Rep1" ~ "A",
                        T ~ "B")
              )
 )
@@ -134,6 +139,9 @@ myquantfiles2 <- paste("data/",
 
 #combining the correct names
 myquantfiles <- append(myquantfiles1[1:2], myquantfiles2[3:6])
+
+#only need this metadata
+metadata <- metadata[1:6,]
 
 #setting sample names  
 names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep = "_")
@@ -206,10 +214,10 @@ dupIDs <- riboCodeSeqs[duplicated(riboCodeSeqs$riboSeqs), ] %>% dplyr::select(OR
 dupID <- list.append(dupIDs)
 
 #pulling the all rows with duplicated ORFIDs and the unique ones to make two separate dataframes. 
-riboCodeDups <- riboCodeSeqs[riboCodeSeqs$ORF_ID %in% dupID$ORF_ID, ]
-riboCodeUniq <- riboCodeSeqs[!(riboCodeSeqs$ORF_ID %in% dupID$ORF_ID), ]
+riboCodeDups <- riboCodeSeqs[riboCodeSeqs$ORF_ID %in% dupID$ORF_ID, ] %>% unique()
+riboCodeUniq <- riboCodeSeqs[!(riboCodeSeqs$ORF_ID %in% dupID$ORF_ID), ] %>% unique()
 
-#so essentially, 4555 AA sequences are duplicated in ribocode. 
+#so essentially, 4555 AA sequences are duplicated in ribocode. #3011?
 
 #getting extra information on the ORF types. From the duplicated, we want to prioritize keeping specific categories like annotated. 
 riboCodeDups <- left_join(riboCodeDups, ribocode[,1:2], by = c("ORF_ID")) %>% unique()
@@ -286,7 +294,7 @@ orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% dplyr::filter(keepColumn == "ke
 ```{r AA collapsing ORFquant, message=FALSE, warning=FALSE, echo=FALSE}
 
 #first I want to collapse ORFquant down to the gene level since it is originally using transcript level information. 
-orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = TRUE) %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) 
+orfQuant_TMPfiltered <- orfQuant_TMPfiltered %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = TRUE) %>% tidyr::unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) 
 orfQuant_TMPfiltered <- orfQuant_TMPfiltered[,-c(1,3,4)] %>% unique() #didn't remove any genes
 
 #grabbing AA seqs and naming them after the ORF_ID

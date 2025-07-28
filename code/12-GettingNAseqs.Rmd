@@ -57,7 +57,7 @@ metadata <- data.frame(
   sample=metadata$SampleID, genotype = metadata$Genotype,
   type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
           T ~ "rna")),
-  rep=factor(case_when(metadata$Treatment2 == "RepA" ~ "A",
+  rep=factor(case_when(metadata$Treatment2 == "Rep1" ~ "A",
                        T ~ "B")
              )
 )
@@ -78,6 +78,8 @@ myquantfiles2 <- paste("data/",
                       sep = "")
 
 myquantfiles <- append(myquantfiles1[1:2], myquantfiles2[3:6])
+
+metadata <- metadata[1:6,]
   
 names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep = "_")
 ```
@@ -87,7 +89,7 @@ names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep
 
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
-AllORFs <- read_csv(here("output", "GeneCollapsedORFs_AllPrograms.csv"))
+AllORFs <- readxl::read_excel(here("output", "AllORFs_wProteomics_filtered.xlsx"))
 
 geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
 colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
@@ -173,10 +175,12 @@ p20TE <- TE_TPM[1:round(nrow(TE_TPM)*.2),] %>% pull(gene_id)
 
 #The problem so far is that these are at the gene level. However I need the transcript level. So I'm going to grab the most abundant transcript. 
 
+getwd()
 #I need to know which transcript is most abundant so grabbing all transcripts
 myTxiTX <- tximport(files = myquantfiles, type = "salmon", tx2gene = tx2gene, txOut = T)
 
-mytranscripts <- myTxiTX$abundance %>% as.data.frame() %>%
+mytranscripts <- myTxiTX$abundance %>%
+  as.data.frame() %>%
   rownames_to_column(var = "transcript_id")
 
 mytranscripts <- mytranscripts[,-c(5,7)] #getting rid of -GFP samples
@@ -269,7 +273,7 @@ gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_t
 #Need to switch the ORF ID from transcripts to genes for ORFquant
 ORFquant <- ORFquant %>% separate(col = "id", into = c("transcript_id", "first", "second"), sep = "_", remove = TRUE) 
 
- ORFquant <- ORFquant %>% unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE)
+ ORFquant <- ORFquant %>% tidyr::unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE)
  
 #keep only the ORFquant data that made the filtering process
 ORFquant <- ORFquant %>% filter(ORF_ID %in% AllORFs$ORF_ID)

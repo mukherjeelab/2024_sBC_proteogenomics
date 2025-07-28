@@ -44,8 +44,9 @@ library(readxl)
 
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
-AllORFs <- read_csv(here("output", "GeneCollapsedORFs_AllPrograms.csv"))
-AllORFs <- AllORFs %>% select(-AAseq) %>% unique()
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+AllORFs_NP <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
+
 
 geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
 colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
@@ -68,7 +69,7 @@ colnames(islets3_OQ) <- "ORF_ID"
 islets_OQall <- rbind(islets2_OQ, islets3_OQ) %>% unique()
 
 
-#getting RiboCode list of ORFs found in sBC proteomics
+#getting RiboCode list of ORFs found in islet proteomics
 islets2_RC <- read_tsv(here("proteomics", "RiboCode", "Cyto24_set2", "Ribo_Cyto24_set2_protein.tsv")) %>% filter(`Unique Spectral Count` > 1) %>% pull(`Protein ID`)%>% as.data.frame()
 colnames(islets2_RC) <- "ORF_ID"
 
@@ -77,6 +78,7 @@ colnames(islets3_RC) <- "ORF_ID"
 
 
 islets_RCall <- rbind(islets2_RC, islets3_RC) %>% unique()
+isletsALL <- rbind(islets_RCall, islets_OQall)
 ```
 
 
@@ -98,14 +100,13 @@ RC_anno$islet %>% table()
 OQ_anno <- OQ_anno %>% dplyr::mutate(islet = case_when(ORF_ID %in% islets_OQall$ORF_ID ~ 'Yes', !(ORF_ID %in% islets_OQall$ORF_ID) ~ 'No'))
 OQ_anno$islet %>% table()
 
-
 #making a table to get the number/count of ORF ids with proteomic support and those without. 
 
 # compute unique levels in data frame
-lvls <- unique(unlist(RC_anno[5]))
+lvls <- unique(unlist(RC_anno[20]))
   
 # apply the summation per value for Ribocode
-t_RC <- sapply(RC_anno[5], 
+t_RC <- sapply(RC_anno[20], 
                function(x) table(factor(x, levels = lvls, 
                                         ordered = TRUE))) %>% as.data.frame()
 
@@ -114,7 +115,7 @@ t_RC <- t_RC %>% rownames_to_column("ProteinSupport") %>% pivot_longer(!c(progra
 
 
 # apply the summation per value for ORFquant
-t_OQ <- sapply(OQ_anno[5], 
+t_OQ <- sapply(OQ_anno[20], 
                function(x) table(factor(x, levels = lvls, 
                                         ordered = TRUE))) %>% as.data.frame()
 t_OQ$program <- "ORFquant"
@@ -156,19 +157,19 @@ OQ_NotAnno <- NOTannoORFs %>% filter(program == "ORFquant")
 
 #asking if these identified nuORFs have proteomic support
 #Start with ribocode 
-RC_NotAnno <- RC_NotAnno %>% dplyr::mutate(islet = case_when(ORF_ID %in% islets_RCall$ORF_ID ~ 'Yes', !(ORF_ID %in% islets_RCall$ORF_ID) ~ 'No'))
+RC_NotAnno <- NOTannoORFs %>% dplyr::mutate(islet = case_when(ORF_ID %in% islets_RCall$ORF_ID ~ 'Yes', !(ORF_ID %in% islets_RCall$ORF_ID) ~ 'No'))
 RC_NotAnno$islet %>% table()
 
 
 #finally ORFquant
-OQ_NotAnno <- OQ_NotAnno %>% dplyr::mutate(islet = case_when(ORF_ID %in% islets_OQall$ORF_ID ~ 'Yes', !(ORF_ID %in% islets_OQall$ORF_ID) ~ 'No'))
+OQ_NotAnno <- NOTannoORFs %>% dplyr::mutate(islet = case_when(ORF_ID %in% islets_OQall$ORF_ID ~ 'Yes', !(ORF_ID %in% islets_OQall$ORF_ID) ~ 'No'))
 OQ_NotAnno$islet %>% table()
 
 
 #making a table to get the number/count of ORF ids with proteomic support and those without. 
   
 # apply the summation per value for Ribocode
-t_RC_NA <- sapply(RC_NotAnno[5], 
+t_RC_NA <- sapply(RC_NotAnno[20], 
                function(x) table(factor(x, levels = lvls, 
                                         ordered = TRUE))) %>% as.data.frame()
 
@@ -177,7 +178,7 @@ t_RC_NA <- t_RC_NA %>% rownames_to_column("ProteinSupport") %>% pivot_longer(!c(
 
 
 # apply the summation per value for ORFquant
-t_OQ_NA <- sapply(OQ_NotAnno[5], 
+t_OQ_NA <- sapply(OQ_NotAnno[20], 
                function(x) table(factor(x, levels = lvls, 
                                         ordered = TRUE))) %>% as.data.frame()
 t_OQ_NA$program <- "ORFquant"
@@ -279,4 +280,116 @@ p_nuORF_proteoSupport_count_NP2
 
 ```
 
+
+```{r}
+
+isletsYes <- AllORFs %>% select(c(islet, ORF_ID))
+
+ORFlist <- left_join(ORFlist, isletsYes)
+
+ORFlist %>% filter(ORF_type != "annotated") %>% select(islet, protein) %>% table()
+#so 283 of them are not detected by proteomics in sBCs or islets. 
+#50 are detected in sBCs but not islets
+#190 in islets but not sBCs
+#566 in both
+
+
+ORFlist %>% filter(ORF_type != "annotated") %>% select(islet, protein, HLA_presented_hi) %>% table()
+#29 are detected at all levels -> islets, immuno, sBCs
+#4 are detected by immuno only
+
+ORFlist %>% filter(ORF_type != "annotated") %>% select(islet, protein, HLA_presented_lo) %>% table()
+#183 are detected at all levels -> islets, immuno, sBCs
+#82 are detected by immuno only but these could be overlap with anno proteins, and indeed is likely I think. However, from a database building standpoint, we could include them anyway. 
+
+ImmunoLo <- read_csv(here("output", "HLA_presented_nuORF_lo.csv"))
+
+ORFlist <- left_join(ORFlist, ImmunoLo %>% select(ORF_ID, HLA_presented_hi, HLA_presented_lo))
+```
+
+
+
+```{r}
+isletTable <- AllORFs_NP %>% select(islet, ORF_type) %>% table() %>% as.data.frame()
+
+isletTable <- isletTable %>%
+  group_by(ORF_type) %>%
+  mutate(Percentage = (Freq / sum(Freq)) * 100)
+
+isletTable$cell <- "islet"
+colnames(isletTable) <- c("proteinSupport", "ORF_type", "Freq","Percent", "Cell")
+
+
+
+
+sBCTable <- AllORFs_NP %>% select(protein, ORF_type) %>% table() %>% as.data.frame()
+sBCTable <- sBCTable %>%
+  group_by(ORF_type) %>%
+  mutate(Percentage = (Freq / sum(Freq)) * 100)
+
+sBCTable$cell <- "sBC"
+colnames(sBCTable) <- c("proteinSupport", "ORF_type", "Freq", "Percent", "Cell")
+
+proteomALL <- rbind(isletTable, sBCTable)
+
+proteomALL$ORF_type <- factor(proteomALL$ORF_type, order = TRUE, levels =c("annotated", 'novel', 'uORF', "dORF", "other"))
+levels(proteomALL$ORF_type)
+
+colors <- c("#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+
+proteoALL_bar <- ggplot(proteomALL %>% filter(ORF_type != "other" & proteinSupport == "Yes"), aes(fill=ORF_type, y=Percent, x=Cell)) + geom_bar(position="dodge", stat="identity") + theme_minimal() + scale_fill_manual(values = colors) + ylab("Percent Protein Support") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+#ggsave(plot = proteoALL_bar, filename = here("plots", "Fig4_proteoALL_bar.pdf"), width = 5, height = 3)
+
+
+proteoALL_bar_counts <- ggplot(proteomALL %>% filter(ORF_type != "other"), aes(fill=proteinSupport, y=Freq, x=ORF_type)) + geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_manual(values = colors) + ylab("Percent Protein Support") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + facet_wrap(~Cell)
+
+p1 <- ggplot(proteomALL %>% 
+         filter(ORF_type != "other" & Cell == "sBC") %>% 
+         mutate(ORF_group = ifelse(ORF_type == "annotated", "Annotated", "Other ORFs")),
+       aes(fill = proteinSupport, y = Freq, x = ORF_type)) +
+  geom_bar(position = "stack", stat = "identity") +
+  theme_minimal() +
+  scale_fill_manual(values = colors) +
+  ylab("Percent Protein Support") +
+  xlab("") + labs(title = "sBC") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  facet_wrap(~ORF_group, scales = "free", ncol = 2)
+
+p2 <- ggplot(proteomALL %>% 
+         filter(ORF_type != "other" & Cell == "islet") %>% 
+         mutate(ORF_group = ifelse(ORF_type == "annotated", "Annotated", "Other ORFs")),
+       aes(fill = proteinSupport, y = Freq, x = ORF_type)) +
+  geom_bar(position = "stack", stat = "identity") +
+  theme_minimal() +
+  scale_fill_manual(values = colors) +
+  ylab("Percent Protein Support") +
+  xlab("") + labs(title = "islet") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  facet_wrap(~ORF_group, scales = "free", ncol = 2)
+
+proteoCounts <- plot_grid(p1, p2)
+
+
+#ggsave(plot = proteoCounts, filename = here("plots", "SuppFig4F_proteoALLcounts_bar.pdf"), width = 10, height = 3)
+```
+
+
+
+```{r}
+AllORFs <- AllORFs %>% dplyr::mutate(islet = case_when(ORF_ID %in% isletsALL$ORF_ID ~ 'Yes', !(ORF_ID %in% isletsALL$ORF_ID) ~ 'No'))
+
+AllORFs_NP <- AllORFs_NP %>% dplyr::mutate(islet = case_when(ORF_ID %in% isletsALL$ORF_ID ~ 'Yes', !(ORF_ID %in% isletsALL$ORF_ID) ~ 'No'))
+
+AllORFs <- left_join(AllORFs, geneInfo[,c(1,4)] %>% unique())
+AllORFs_NP <- left_join(AllORFs_NP, geneInfo[,c(1,4)] %>% unique())
+
+AllORFs %>% filter(ORF_type != "annotated") %>% dplyr::select(islet, program) %>% table()
+
+writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+writexl::write_xlsx(AllORFs_NP, here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
+
+```
 

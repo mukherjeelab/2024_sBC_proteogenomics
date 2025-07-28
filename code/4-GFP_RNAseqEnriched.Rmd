@@ -46,7 +46,7 @@ annotation <- geneInfo %>%
   as.data.frame() # convert into dataframe
 
 #gene symbols only
-gene_symbol <- geneInfo %>% select(gene_id, symbol) %>% unique()
+gene_symbol <- geneInfo %>% dplyr::select(gene_id, symbol) %>% unique()
 
 #What datafiles do I need? 
 allCounts <- read_csv(here::here("output", "allCounts.csv"))
@@ -58,7 +58,7 @@ metadata <- data.frame(genotype = c("GFPyes", "GFPyes","GFPyes","GFPno","GFPyes"
 # 2. Determine differential expression with DESeq2
 
 
-```{r DEseq2, message=FALSE, warning=FALSE, echo=FALSE}
+```{r DEseq2, message=TRUE, warning=FALSE, echo=FALSE}
 #Goal here is to see what transcripts are different between the GFP +/- RNA-seq. The hypothesis is that the GFP+ is enriched for beta-cell transcripts. 
 
 metadata_rna <- metadata %>% filter(type == "rna")
@@ -84,7 +84,7 @@ sigGenes <- res_rna[which(res_rna$padj<0.05), ] %>%
 
 sigGenes <- sigGenes[order(sigGenes$log2FoldChange),] #ordering by lfc
 
-write_csv(sigGenes, here("output", "GFPenrichedList.csv")) #saving list
+#write_csv(sigGenes, here("output", "GFPenrichedList.csv")) #saving list
 ```
 
 
@@ -122,7 +122,7 @@ GSEAplotGeneSet <- gseaplot(edo2, geneSetID = 1, by = "runningScore", title = ed
 
 GSEAplotGeneSet
 
-ggsave(plot = GSEAplotGeneSet, filename = here("plots", "Figure1", "GFP_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+#ggsave(plot = GSEAplotGeneSet, filename = here("plots", "Figure2", "Fig2E_GFP_GSEApancreasHallmark.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 ```
 
 
@@ -163,6 +163,6 @@ GFPB40_barPlot <- ggbarplot(GFPenrichedB40, x = "symbol", y = "log2FoldChange",
 
 GFPB40_barPlot
 
-ggsave(plot = GFPB40_barPlot, filename = here::here("plots","Figure1", "Supp_GFP40dep_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+#ggsave(plot = GFPB40_barPlot, filename = here::here("plots","Figure2", "Supp2AB_GFP40dep_barplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
 ```
 

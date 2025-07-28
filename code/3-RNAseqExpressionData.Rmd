@@ -83,7 +83,7 @@ metadata <- data.frame(
   sample=metadata$SampleID, genotype = metadata$Genotype,
   type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
           T ~ "rna")),
-  rep=factor(case_when(metadata$Treatment2 == "RepA" ~ "A",
+  rep=factor(case_when(metadata$Treatment2 == "Rep1" ~ "A",
                        T ~ "B")
              )
 )
@@ -112,19 +112,20 @@ myquantfiles2 <- paste("data/",
                       sep = "")
 
 myquantfiles <- append(myquantfiles1[1:2], myquantfiles2[3:6])
-  
+
+metadata <- metadata[1:6,]
 names(myquantfiles) <- paste(metadata$genotype, metadata$type, metadata$rep, sep = "_")
 
 
 
 myTxi <- tximport(myquantfiles, type = "salmon", tx2gene = tx2gene)
 
-# hist(log2(rowSums(myTxi$counts[,1:6])), breaks = 30) + abline(v=8)
-keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,1:6])) > 8,])
+# hist(log2(rowSums(myTxi$counts[,3:6])), breaks = 30) + abline(v=8)
+keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,3:6])) > 7,])
 
 #need a full counts table to submit to GEO. 
 fullCountsTable <- myTxi$counts
-write.csv(as.data.frame(fullCountsTable), here("output", "fullCountsTable.csv"), row.names = TRUE)
+#write.csv(as.data.frame(fullCountsTable), here("output", "fullCountsTable.csv"), row.names = TRUE)
 
 ```
 
@@ -288,12 +289,11 @@ tpms2 <- tpms %>% dplyr::filter(rowSums(tpms[,2:7]) > 1)
 #creating a function to plot the TPM expression for a specific gene input
 plotgeneTPM <- function(tpms, goi) {
 
-conflicts_prefer(dplyr::filter)  
 mygene <- annotation %>% dplyr::filter(symbol== goi)
-tpmsGene <- tpms %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% dplyr::filter(ensembl_gene_id == mygene$gene)
+tpmsGene <- allTPM %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% dplyr::filter(ensembl_gene_id == mygene$gene)
 
 tpmsGene <- pivot_longer(data = tpmsGene, cols = 2:7) %>% separate(col = "name", into = c("type", "exp", "rep"), sep = "_")
-tpmsGene <- unite(tpmsGene, col = "name", c("type", "exp"), sep = "_", remove = FALSE)
+tpmsGene <- tidyr::unite(tpmsGene, col = "name", c("type", "exp"), sep = "_", remove = FALSE)
 
 tpmsGene$name <- factor(tpmsGene$name, levels=c("GFP+_ribo", "GFP+_rna", "GFP-_rna"))
 
@@ -320,9 +320,9 @@ head(df2)
 ggplot(df2, aes(x=name, y=value)) + 
    geom_bar(stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=value-sd, ymax=value+sd), width=.2,
-                 position=position_dodge(.9)) + ylab("CPM") +
+                 position=position_dodge(.9)) + ylab("TPM") +
     xlab("") +
-    theme_minimal() + ggtitle(mygene$symbol) + stat_compare_means(aes(label = paste0("p.adj = ",..p.adj.., digits = 3)), label.x = 1.5, method = "t.test", paired = FALSE)
+    theme_minimal() + ggtitle(mygene$symbol)
 }
 ```
 

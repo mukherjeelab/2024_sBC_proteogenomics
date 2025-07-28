@@ -1,0 +1,147 @@
+---
+title: "17 - GSEA nuORFs"
+author: "Kathryn Walters"
+date: "2024-09-03"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(msigdbr)
+library(clusterProfiler)
+library(ggplot2)
+library(ggpubr)
+library(cowplot)
+library(ggVennDiagram)
+library(scales)
+library(ggthemes)
+library(preprocessCore)
+library(dplyr)
+library(writexl)
+```
+
+
+```{r}
+#grabbing and creating necessary files
+geneInfo <- read_csv(here::here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+ORFlist <- readxl::read_excel(here("output", "AllORFs_wProteomics_filtered.xlsx"))
+ORFlist <- left_join(ORFlist, annotation)
+
+h_gene_sets = msigdbr(species = "human", category = "H") #getting hallmark gene sets.
+head(h_gene_sets)
+
+msigdbr_t2g <- h_gene_sets %>% dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+
+gene_ids_vector <- ORFlist %>% filter(ORF_type == "annotated") %>% pull(symbol)
+
+enricher(gene = gene_ids_vector, TERM2GENE = msigdbr_t2g)
+
+
+```
+
+
+```{r}
+BiocManager::install("GeneOverlap")
+library(GeneOverlap)
+
+ORFlist %>% dplyr::select(gene_id) %>% unique() #12,524 genes is the universe of possibilities?
+ORFlist <- separate(ORFlist, "gene_id", into = c("gene_id2", "other"), sep = 15)
+
+ORFs_list <- list(novel = ORFlist %>% filter(ORF_type == "novel") %>% pull(gene_id2) %>% unique(), uORF = ORFlist %>% filter(ORF_type == "uORF") %>% pull(gene_id2) %>% unique(), dORF= ORFlist %>% filter(ORF_type == "dORF") %>% pull(gene_id2) %>% unique(), annotated = ORFlist %>% filter(ORF_type == "annotated") %>% pull(gene_id2) %>% unique(), other = ORFlist %>% filter(ORF_type == "other") %>% pull(gene_id2) %>% unique())
+
+
+h_gene_sets %>% select(gs_name) %>% table()
+
+hgenes <- list(HALLMARK_ADIPOGENESIS = h_gene_sets %>% filter(gs_name == "HALLMARK_ADIPOGENESIS") %>% pull(ensembl_gene), 
+               HALLMARK_ALLOGRAFT_REJECTION = h_gene_sets %>% filter(gs_name == "HALLMARK_ALLOGRAFT_REJECTION") %>% pull(ensembl_gene), 
+               HALLMARK_ANDROGEN_RESPONSE = h_gene_sets %>% filter(gs_name == "HALLMARK_ANDROGEN_RESPONSE") %>% pull(ensembl_gene),
+               HALLMARK_ANGIOGENESIS = h_gene_sets %>% filter(gs_name == "HALLMARK_ANGIOGENESIS") %>% pull(ensembl_gene),
+               HALLMARK_APICAL_JUNCTION = h_gene_sets %>% filter(gs_name == "HALLMARK_APICAL_JUNCTION") %>% pull(ensembl_gene),
+               HALLMARK_APICAL_SURFACE = h_gene_sets %>% filter(gs_name == "HALLMARK_APICAL_SURFACE") %>% pull(ensembl_gene),
+               HALLMARK_APOPTOSIS = h_gene_sets %>% filter(gs_name == "HALLMARK_APOPTOSIS") %>% pull(ensembl_gene),
+               HALLMARK_BILE_ACID_METABOLISM = h_gene_sets %>% filter(gs_name == "HALLMARK_BILE_ACID_METABOLISM") %>% pull(ensembl_gene),
+               HALLMARK_CHOLESTEROL_HOMEOSTASIS = h_gene_sets %>% filter(gs_name == "HALLMARK_CHOLESTEROL_HOMEOSTASIS") %>% pull(ensembl_gene),
+               HALLMARK_COAGULATION = h_gene_sets %>% filter(gs_name == "HALLMARK_COAGULATION") %>% pull(ensembl_gene),
+               HALLMARK_COMPLEMENT = h_gene_sets %>% filter(gs_name == "HALLMARK_COMPLEMENT") %>% pull(ensembl_gene),
+               HALLMARK_DNA_REPAIR = h_gene_sets %>% filter(gs_name == "HALLMARK_DNA_REPAIR") %>% pull(ensembl_gene),
+               HALLMARK_E2F_TARGETS = h_gene_sets %>% filter(gs_name == "HALLMARK_E2F_TARGETS") %>% pull(ensembl_gene),
+               HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION = h_gene_sets %>% filter(gs_name == "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION") %>% pull(ensembl_gene),
+               HALLMARK_ESTROGEN_RESPONSE_EARLY = h_gene_sets %>% filter(gs_name == "HALLMARK_ESTROGEN_RESPONSE_EARLY") %>% pull(ensembl_gene),
+               HALLMARK_ESTROGEN_RESPONSE_LATE = h_gene_sets %>% filter(gs_name == "HALLMARK_ESTROGEN_RESPONSE_LATE") %>% pull(ensembl_gene),
+               HALLMARK_FATTY_ACID_METABOLISM = h_gene_sets %>% filter(gs_name == "HALLMARK_FATTY_ACID_METABOLISM") %>% pull(ensembl_gene),
+               HALLMARK_G2M_CHECKPOINT = h_gene_sets %>% filter(gs_name == "HALLMARK_G2M_CHECKPOINT") %>% pull(ensembl_gene),
+               HALLMARK_GLYCOLYSIS = h_gene_sets %>% filter(gs_name == "HALLMARK_GLYCOLYSIS") %>% pull(ensembl_gene),
+               HALLMARK_HEDGEHOG_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_HEDGEHOG_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_HEME_METABOLISM = h_gene_sets %>% filter(gs_name == "HALLMARK_HEME_METABOLISM") %>% pull(ensembl_gene),
+               HALLMARK_HYPOXIA = h_gene_sets %>% filter(gs_name == "HALLMARK_HYPOXIA") %>% pull(ensembl_gene),
+               HALLMARK_IL2_STAT5_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_IL2_STAT5_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_IL6_JAK_STAT3_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_IL6_JAK_STAT3_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_INFLAMMATORY_RESPONSE = h_gene_sets %>% filter(gs_name == "HALLMARK_INFLAMMATORY_RESPONSE") %>% pull(ensembl_gene),
+               HALLMARK_INTERFERON_ALPHA_RESPONSE = h_gene_sets %>% filter(gs_name == "HALLMARK_INTERFERON_ALPHA_RESPONSE") %>% pull(ensembl_gene),
+               HALLMARK_INTERFERON_GAMMA_RESPONSE = h_gene_sets %>% filter(gs_name == "HALLMARK_INTERFERON_GAMMA_RESPONSE") %>% pull(ensembl_gene),
+               HALLMARK_KRAS_SIGNALING_DN = h_gene_sets %>% filter(gs_name == "HALLMARK_KRAS_SIGNALING_DN") %>% pull(ensembl_gene),
+               HALLMARK_KRAS_SIGNALING_UP = h_gene_sets %>% filter(gs_name == "HALLMARK_KRAS_SIGNALING_UP") %>% pull(ensembl_gene),
+               HALLMARK_MITOTIC_SPINDLE = h_gene_sets %>% filter(gs_name == "HALLMARK_MITOTIC_SPINDLE") %>% pull(ensembl_gene),
+               HALLMARK_MTORC1_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_MTORC1_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_MYC_TARGETS_V1 = h_gene_sets %>% filter(gs_name == "HALLMARK_MYC_TARGETS_V1") %>% pull(ensembl_gene),
+               HALLMARK_MYC_TARGETS_V2 = h_gene_sets %>% filter(gs_name == "HALLMARK_MYC_TARGETS_V2") %>% pull(ensembl_gene), 
+               HALLMARK_MYOGENESIS = h_gene_sets %>% filter(gs_name == "HALLMARK_MYOGENESIS") %>% pull(ensembl_gene),
+               HALLMARK_NOTCH_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_NOTCH_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_OXIDATIVE_PHOSPHORYLATION = h_gene_sets %>% filter(gs_name == "HALLMARK_OXIDATIVE_PHOSPHORYLATION") %>% pull(ensembl_gene),
+               HALLMARK_P53_PATHWAY = h_gene_sets %>% filter(gs_name == "HALLMARK_P53_PATHWAY") %>% pull(ensembl_gene),
+               HALLMARK_PANCREAS_BETA_CELLS = h_gene_sets %>% filter(gs_name == "HALLMARK_PANCREAS_BETA_CELLS") %>% pull(ensembl_gene),
+               HALLMARK_PEROXISOME = h_gene_sets %>% filter(gs_name == "HALLMARK_PEROXISOME") %>% pull(ensembl_gene),
+               HALLMARK_PI3K_AKT_MTOR_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_PI3K_AKT_MTOR_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_PROTEIN_SECRETION = h_gene_sets %>% filter(gs_name == "HALLMARK_PROTEIN_SECRETION") %>% pull(ensembl_gene),
+               HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY = h_gene_sets %>% filter(gs_name == "HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY") %>% pull(ensembl_gene),
+               HALLMARK_SPERMATOGENESIS = h_gene_sets %>% filter(gs_name == "HALLMARK_SPERMATOGENESIS") %>% pull(ensembl_gene),
+               HALLMARK_TGF_BETA_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_TGF_BETA_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_TNFA_SIGNALING_VIA_NFKB = h_gene_sets %>% filter(gs_name == "HALLMARK_TNFA_SIGNALING_VIA_NFKB") %>% pull(ensembl_gene),
+               HALLMARK_TNFA_SIGNALING_VIA_NFKB = h_gene_sets %>% filter(gs_name == "HALLMARK_TNFA_SIGNALING_VIA_NFKB") %>% pull(ensembl_gene),
+               HALLMARK_UNFOLDED_PROTEIN_RESPONSE = h_gene_sets %>% filter(gs_name == "HALLMARK_UNFOLDED_PROTEIN_RESPONSE") %>% pull(ensembl_gene),
+               HALLMARK_UV_RESPONSE_DN = h_gene_sets %>% filter(gs_name == "HALLMARK_UV_RESPONSE_DN") %>% pull(ensembl_gene),
+               HALLMARK_UV_RESPONSE_UP = h_gene_sets %>% filter(gs_name == "HALLMARK_UV_RESPONSE_UP") %>% pull(ensembl_gene),
+               HALLMARK_WNT_BETA_CATENIN_SIGNALING = h_gene_sets %>% filter(gs_name == "HALLMARK_WNT_BETA_CATENIN_SIGNALING") %>% pull(ensembl_gene),
+               HALLMARK_XENOBIOTIC_METABOLISM = h_gene_sets %>% filter(gs_name == "HALLMARK_XENOBIOTIC_METABOLISM") %>% pull(ensembl_gene))
+
+
+dev.off()
+go.obj <- newGOM(ORFs_list, hgenes, genome.size= 13000)
+
+
+
+tmp <- getMatrix(go.obj, name="odds.ratio")
+
+tmp <- getMatrix(go.obj, name="pval")
+tmp <- as.data.frame(tmp) 
+tmp$categories <- c("novel", "uORF", "dORF", "annotated", "other")
+
+tmp2 <- pivot_longer(tmp, 1:50)
+
+colnames(tmp2) <- c("categories", "name", "odds.ratio")
+plot1 <- ggplot(tmp2, aes(categories, name, fill= odds.ratio)) + 
+  geom_tile()
+
+colnames(tmp2) <- c("categories", "name", "pvalue")
+plot2 <- ggplot(tmp2, aes(categories, name, fill= pvalue)) + 
+  geom_tile()
+
+
+
+
+#file for panther
+
+write_tsv(as.data.frame(ORFs_list$novel %>% unique()), file = here("novel.tsv"))
+```
+
+

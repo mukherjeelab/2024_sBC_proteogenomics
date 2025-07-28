@@ -1,0 +1,868 @@
+---
+title: "HLA prediction"
+author: "Kathryn Walters"
+date: "2024-10-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggVennDiagram)
+library(ggthemes)
+library(ggplot2)
+library(readr)
+library(cowplot)
+
+```
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+ORFlist <- readxl::read_excel(here("output", "AllORFs_wProteomicsIslet_filtered.xlsx"))
+HLA_table <- read_csv(here("IEDB", "HLA_201only", "peptide_table_ALL.csv"))
+HLA_sequences <- read_csv(here("IEDB", "HLA_201only", "sequence_table_ALL.csv"))
+HLA_sequences <- HLA_sequences[,1:2]
+
+HLA_table <- left_join(HLA_table, HLA_sequences)
+
+#BUILD A WALL (jk a database) that contains sBC proteo, islet proteo, immuno data.
+
+#actually ran code in 10 - Islet proteomics so now ORFlist has islet and sBC proteo list. I'll hate myself later.
+
+#Here, now I saved it so I can load it which I will change above. . 
+#writexl::write_xlsx(ORFlist, here("output", "AllORFs_wProteomicsIslet_filtered.xlsx"))
+
+
+HLA_table <- left_join(HLA_table, ORFlist, by = c("sequence name" = "ORF_ID"))
+
+#However, this will just say if that nuORF had a peptide detected by immunopeptidomics. 
+Immunodata_ALL <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx"))
+
+Immuno_Lo <- read.csv(here("output", "HLA_presented_nuORF_lo.csv"))
+Immuno_Lo <- Immuno_Lo[,c(1,7,8)]
+
+HLA_table <- left_join(HLA_table, Immuno_Lo, by = c("sequence name" = "ORF_ID"))
+HLA_table <- HLA_table %>% mutate_all(~ ifelse(is.na(.), "No", .))
+
+#If I want to know if that exact peptide was detected, I need to use those sequences. 
+Immunodata <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx")) 
+Immunodata <- Immunodata %>% filter(`peptide length` == 9)
+
+inner_join(Immunodata, HLA_table, by = c("Unmodified peptide sequence" = "peptide")) #339 of the HLA sequences were found exactly in the immunopep data. 
+
+HLA_table <- HLA_table %>% dplyr::mutate(immunoSeq = case_when(peptide %in% Immunodata$`Unmodified peptide sequence` ~ 'Yes', !(peptide %in% Immunodata$`Unmodified peptide sequence`) ~ 'No'))
+
+
+ggplot(HLA_table, aes(x=`netmhcpan_ba IC50`,  color = immunoSeq)) + 
+  geom_density() + theme_minimal() + geom_vline(xintercept =33000) + facet_wrap(~immunoSeq)
+
+ggplot(HLA_table, aes(x=`netmhcpan_el percentile`, color = immunoSeq)) + 
+  geom_density() + theme_minimal() #+ xlim(0,120) + geom_vline(xintercept =50)
+
+
+TPM_TE <- readxl::read_xlsx(here("output", "TPM_TEdata.xlsx"))
+
+HLA_table <- left_join(HLA_table, TPM_TE)
+
+#processing, whatever else I have. 
+HLA_table <- HLA_table %>% dplyr::mutate(ImmunoCutOff = case_when(`netmhcpan_ba IC50` < 8000 & immunoSeq == "Yes" ~ 'High',`netmhcpan_ba IC50` > 8000 & immunoSeq == "Yes" ~ 'Low', immunoSeq == "No" ~ 'No immunoPep Matches'))
+
+ggplot(HLA_table, aes(x=`netmhcpan_el percentile`,  color = ImmunoCutOff)) + 
+  geom_density() + theme_minimal()
+
+ggplot(HLA_table, aes(x=`processing total score`,  color = ImmunoCutOff)) + 
+  geom_density() + theme_minimal()
+
+ggplot(HLA_table, aes(x=`immunogenicity score`,  color = ImmunoCutOff)) + 
+  geom_density() + theme_minimal()
+
+ggplot(HLA_table, aes(x=log10(`NormMeanRibo`),  color = ImmunoCutOff)) + 
+  geom_density() + theme_minimal() 
+
+#wall built. Let's take a look. 
+
+ggplot(HLA_table, aes(`median binding percentile`, color = "Immunoseq")) + stat_ecdf(geom = "step")+
+labs(title="Empirical Cumulative \n Density Function",
+     y = "F(height)", x="Height in inch")+
+theme_classic()
+
+ggplot(HLA_table, aes(x = `median binding percentile`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + xlim(0,1) + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides")
+
+ggplot(HLA_table, aes(x = `median binding percentile`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 1, color = "black")
+
+
+ggplot(HLA_table, aes(x = `immunogenicity score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity Score", title = "Immunogenicity Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+ggplot(HLA_table, aes(x = `processing total score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "Processing Total Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+
+#I want to create a column where I can summarize all 5 categories to see how each of those works in this dataset. 
+
+HLA_table$combined <- apply(HLA_table[, c("protein", "islet", "HLA_presented_hi", "HLA_presented_lo", "immunoSeq")], 1, paste, collapse = "_")
+
+ggplot(HLA_table, aes(x = `median binding percentile`, colour = combined)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 1, color = "black")
+
+#hmm this really isn't too informative. Need to think about these categories more carefully. 
+
+a1 <- ggplot(HLA_table, aes(x = `median binding percentile`, colour = HLA_presented_hi)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "HLA_presented_Unique") + geom_vline(xintercept = 1, color = "black")
+
+a2 <- ggplot(HLA_table, aes(x = `median binding percentile`, colour = HLA_presented_lo)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "HLA_presented_ALL") + geom_vline(xintercept = 1, color = "black")
+
+a3 <- ggplot(HLA_table, aes(x = `median binding percentile`, colour = islet)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Islet Proteomic") + geom_vline(xintercept = 1, color = "black")
+
+a4 <- ggplot(HLA_table, aes(x = `median binding percentile`, colour = protein)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "sBC Proteomic") + geom_vline(xintercept = 1, color = "black")
+
+plot_grid(a1, a2, a3, a4)
+
+
+#Immunogenicity?
+b1 <- ggplot(HLA_table, aes(x = `immunogenicity score`, colour = HLA_presented_hi)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity", title = "HLA_presented_Unique") + geom_vline(xintercept = 0, color = "black")
+
+b2 <- ggplot(HLA_table, aes(x = `immunogenicity score`, colour = HLA_presented_lo)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity", title = "HLA_presented_ALL") + geom_vline(xintercept = 0, color = "black")
+
+b3 <- ggplot(HLA_table, aes(x = `immunogenicity score`, colour = islet)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity", title = "Islet Proteomic") + geom_vline(xintercept = 0, color = "black")
+
+b4 <- ggplot(HLA_table, aes(x = `immunogenicity score`, colour = protein)) + stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity", title = "sBC Proteomic") + geom_vline(xintercept = 0, color = "black")
+
+plot_grid(b1, b2, b3, b4)
+
+
+#Processing?
+c1 <- ggplot(HLA_table, aes(x = `processing total score`, colour = HLA_presented_hi)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "HLA_presented_Unique") + geom_vline(xintercept = 0, color = "black")
+
+c2 <- ggplot(HLA_table, aes(x = `processing total score`, colour = HLA_presented_lo)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "HLA_presented_ALL") + geom_vline(xintercept = 0, color = "black")
+
+c3 <- ggplot(HLA_table, aes(x = `processing total score`, colour = islet)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "Islet Proteomic") + geom_vline(xintercept = 0, color = "black")
+
+c4 <- ggplot(HLA_table, aes(x = `processing total score`, colour = protein)) + stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "sBC Proteomic") + geom_vline(xintercept = 0, color = "black")
+
+plot_grid(c1, c2, c3, c4)
+
+
+#MHC score
+ggplot(HLA_table, aes(x = `mhc score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "MHC Score", title = "MHC score")
+
+#processing score
+ggplot(HLA_table, aes(x = `processing score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Processing Score", title = "Processing score")
+
+#proteasome score
+ggplot(HLA_table, aes(x = `proteasome score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Proteasome Score", title = "Proteasome score")
+
+#TAP score
+ggplot(HLA_table, aes(x = `tap score`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "TAP Score", title = "TAP score")
+
+HLA_table_filtered <- HLA_table %>% filter(`median binding percentile` < 35 & `processing score` > 1)
+
+HLA_table_filtered %>% select(islet, protein) %>% table()
+HLA_table_filtered %>% select(immunoSeq) %>% table()
+
+#it would be helpful to see how all the metrics correlate with each other for the peptides supported by immunopeptidomics.
+
+HLA_table_immuno <- HLA_table %>% filter(immunoSeq == "Yes")
+
+corr_input <- HLA_table_immuno[,c(1,2,8,12,15:22)]
+
+corr_input <- corr_input %>% tidyr::unite(col = "peptideName", 1:2, remove = TRUE)
+
+corr_input <- corr_input %>% filter(peptideName != "329_LLLLLLLLL")
+corr_input <- column_to_rownames(corr_input, var = "peptideName")
+
+heatmapCor <- cor(corr_input)
+
+pheatmap::pheatmap(heatmapCor, clustering_distance_rows = "euclidean",clustering_distance_cols = "euclidean", clustering_method = "complete", border_color = "black")
+
+heatmapCorII <- cor(corr_input[,c(2,8,5,9)])
+
+pheatmap::pheatmap(heatmapCorII, clustering_distance_rows = "euclidean",clustering_distance_cols = "euclidean", clustering_method = "complete", border_color = "black")
+
+
+Immunodata %>% filter(`peptide length` == 9) %>% pull()
+
+```
+
+
+```{r annoORFs}
+#we decided we want a ML model to determine cutoffs since there is no clear way to make these decisions. I want to use annotated ORFs as the training data. I took the annotated ORFs and fed to the MHC predictor. Now I want to divide/mark the 9mers based on if we found them in the immunopeptidomics data. 
+
+#first I need to make the annoDataset because I had to run in batches. Each of these first 3 is 500 anno ORFs. 
+
+anno_HLA_table1 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "peptide_table_6dc6ae1b.csv"))
+
+anno_HLA_table2 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "peptide_table_87a6e8bf.csv"))
+
+anno_HLA_table3 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "peptide_table_658279c9.csv"))
+
+
+anno_HLA_sequence1 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "sequence_table_6dc6ae1b.csv"))
+
+anno_HLA_sequence2 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "sequence_table_87a6e8bf.csv"))
+
+anno_HLA_sequence3 <- read_csv(here("IEDB", "HLA_201only", "Anno", "Originals", "sequence_table_658279c9.csv"))
+
+
+anno_HLA_sequence1 <- anno_HLA_sequence1[,1:2]
+anno_HLA_sequence2 <- anno_HLA_sequence2[,1:2]
+anno_HLA_sequence3 <- anno_HLA_sequence3[,1:2]
+
+anno_HLA_table1 <- left_join(anno_HLA_table1, anno_HLA_sequence1)
+anno_HLA_table2 <- left_join(anno_HLA_table2, anno_HLA_sequence2)
+anno_HLA_table3 <- left_join(anno_HLA_table3, anno_HLA_sequence3)
+
+anno_HLA_table <- rbind(anno_HLA_table1, anno_HLA_table2, anno_HLA_table3)
+
+#I did another dumb thing where I ran other code to make ORFlist have the Immuno column here too. #So I guess I will save and load this table. 
+#writexl::write_xlsx(ORFlist, here("output", "AllORFs_wProteomicsIsletImmuno_filtered.xlsx"))
+ORFlist <- readxl::read_xlsx( here("output", "AllORFs_wProteomicsIsletImmuno_filtered.xlsx"))
+anno_HLA_table <- left_join(anno_HLA_table, ORFlist, by = c("sequence name" = "ORF_ID"))
+
+#If I want to know if that exact peptide was detected, I need to use those sequences. 
+Immunodata <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx")) 
+Immunodata <- Immunodata %>% filter(`peptide length` == 9)
+
+inner_join(Immunodata, anno_HLA_table, by = c("Unmodified peptide sequence" = "peptide")) #1519 of the HLA sequences (so far run as predicted) were found exactly in the immunopep data. 
+
+anno_HLA_table <- anno_HLA_table %>% dplyr::mutate(immunoSeq = case_when(peptide %in% Immunodata$`Unmodified peptide sequence` ~ 'Yes', !(peptide %in% Immunodata$`Unmodified peptide sequence`) ~ 'No'))
+
+#Do some of the trends I saw with the nuORFs still hold true? Before I run ML modeling. 
+
+ggplot(anno_HLA_table, aes(x = `median binding percentile`, colour = immunoSeq)) +
+  stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides") +xlim(0,1)
+
+
+ggplot(anno_HLA_table, aes(x = `median binding percentile`, colour = immunoSeq)) + stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 1, color = "black")
+
+
+ggplot(anno_HLA_table, aes(x = `immunogenicity score`, colour = immunoSeq)) + stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity Score", title = "Immunogenicity Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+ggplot(anno_HLA_table, aes(x = `processing total score`, colour = immunoSeq)) + stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "Processing Total Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+#can I combine the nuORF and annoORF dataset to make sure these shifts are similar? 
+
+HLA_table_c <- HLA_table[,-c(30,33)]
+
+HLA_table_ALL <- rbind(HLA_table_c, anno_HLA_table)
+
+HLA_table_ALL <- HLA_table_ALL %>% tidyr::unite(col = "peptideName", c(25,31), remove = FALSE)
+
+ggplot(HLA_table_ALL, aes(x = `median binding percentile`, colour = peptideName)) + stat_ecdf() + theme_minimal() + labs(x = "Median Binding Percentile", title = "Binding Percentile Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 1, color = "black")
+
+ggplot(HLA_table_ALL, aes(x = `immunogenicity score`, colour = peptideName)) + stat_ecdf() + theme_minimal() + labs(x = "Immunogenicity Score", title = "Immunogenicity Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+ggplot(HLA_table_ALL, aes(x = `processing total score`, colour = peptideName)) + stat_ecdf() + theme_minimal() + labs(x = "Processing Total Score", title = "Processing Total Score Comparison \n Immunopeptidomics vs Predicted Peptides") + geom_vline(xintercept = 0, color = "black")
+
+#Overall I feel confident moving forward with this. 
+
+#Neel would like a breakdown of the data, so here are some stats. 
+
+#breakdown the immunopep data...
+#how many are there
+Immunodata$`Row Labels` %>% unique() %>% length()
+
+Immunodata %>% filter(`total annotations` != `Annotations normal`) %>% select(`Row Labels`)
+
+Immunodata %>% filter(`Annotations normal` == 0)
+
+ORFlist_unique <- ORFlist[,-c(5)]
+
+# Identify duplicates and collect duplicate ORF_IDs
+ORFlist_unique <- ORFlist_unique %>%
+  group_by(AAseq) %>%
+  mutate(duplicate_id = ifelse(duplicated(AAseq), NA, paste(ORF_ID[duplicated(AAseq)], collapse = ", "))) %>%
+  filter(!duplicated(AAseq)) %>%
+  ungroup()
+
+ORFlist_unique %>% filter(ORF_type != "annotated") %>% filter(protein == "Yes")
+
+df2 <- ORFlist_unique %>% filter(ORF_type != "annotated") %>% filter(protein == "Yes") %>% dplyr::select(c(ORF_ID, AAseq))
+df2 <- df2[nchar(df2$AAseq) < 100, ]
+write_tsv(df2, col_names = FALSE, file = here("output", "unique_ORFs_fastaALL.tsv"))
+
+
+
+
+#how many from each database
+
+
+ORFlist_unique %>% filter(ORF_type == "annotated" & HLA_presented_lo == "Yes")
+ORFlist_unique %>% filter(ORF_type == "annotated")
+
+ORFlist_unique %>% filter(ORF_type != "annotated" & HLA_presented_lo == "Yes")
+ORFlist_unique %>% filter(ORF_type != "annotated" & HLA_presented_lo == "Yes") %>% select(ORF_type) %>% table()
+ORFlist_unique %>% filter(ORF_type != "annotated")
+ORFlist_unique %>% filter(ORF_type != "annotated") %>% select(ORF_type) %>% table()
+
+ORFlist_unique <- ORFlist_unique %>% mutate(HLA_presented_hi = case_when(ORF_ID %in% protein_list_nu ~ "Yes", .default = "No"))
+
+ORFlist_unique1 %>% filter(HLA_presented_hi == "Yes") %>% select(ORF_type) %>% table()
+
+#how many map annotated (unique and total)
+#how many map nuORF (unique (97) and total(325))
+
+#MHC predicition numbers...
+#total possible 9mers and unique 9mers?
+
+# Function to calculate the number of 9-mers for a given sequence
+count_9mers <- function(sequence) {
+  seq_length <- nchar(sequence)
+  if (seq_length < 9) {
+    return(0)  # No 9-mers possible if sequence is shorter than 9 amino acids
+  } else {
+    return(seq_length - 9 + 1)  # Number of overlapping 9-mers
+  }
+}
+
+# Apply the function to each sequence and sum the results
+ORFlist_unique$nine_mer_count <- sapply(ORFlist_unique$AAseq, count_9mers)
+
+sum(ORFlist_unique %>% filter(ORF_type == "annotated") %>% select(nine_mer_count))
+sum(ORFlist_unique %>% filter(ORF_type != "annotated") %>% select(nine_mer_count))
+
+
+# Function to generate all 9-mers from a given sequence
+generate_9mers <- function(sequence) {
+  seq_length <- nchar(sequence)
+  if (seq_length < 9) {
+    return(character(0))  # Return an empty vector if the sequence is shorter than 9
+  } else {
+    # Generate all overlapping 9-mers
+    return(sapply(1:(seq_length - 9 + 1), function(i) substr(sequence, i, i + 8)))
+  }
+}
+
+# Generate all 9-mers from each sequence and combine them into a single vector
+all_9mers_anno <- unlist(sapply(ORFlist_unique %>% filter(ORF_type == "annotated") %>% pull(AAseq), generate_9mers))
+all_9mers_nu <- unlist(sapply(ORFlist_unique %>% filter(ORF_type != "annotated") %>% pull(AAseq), generate_9mers))
+
+# Find the unique 9-mers and count them
+length(unique(all_9mers_nu))
+length(unique(all_9mers_anno))
+
+unique_in_list1 <- setdiff(all_9mers_nu, all_9mers_anno)
+length(unique_in_list1)
+# Count the number of unique 9-mers in list1 that are not in list2
+num_unique_in_list1 <- 
+
+
+#TE detected vs non detected? 
+
+#I want to think about this a little bit.. To train the RFM, I can take my 1500 immuno positive calls from the anno data and also draw a random 1500 which are negative. Train it. Then apply to my predicted nuORF data and see if it calls the 327 correctly? Just because we didn't detect it in immunopep doesn't mean anything though.. so how will that actually work?
+
+
+
+```
+
+```{r random trees}
+library(randomForest)
+library(datasets)
+library(caret)
+
+#first I need to make my dataset. Going to use the annotated to build model. 
+anno_HLA_table %>% select(immunoSeq) %>% table() #this is the anno data, you can see it is very unbalanced for the categorical variable I want to predict. I'm going to trim the "no" group. 
+
+# Count the number of "Yes" in the 'immunoseq' column
+num_yes <- sum(anno_HLA_table$immunoSeq == "Yes")
+
+# Subset rows where 'immunoSeq' is "No"
+no_subset <- anno_HLA_table[anno_HLA_table$immunoSeq == "No", ]
+
+# Randomly sample 'num_yes' rows from the "No" subset
+set.seed(123)  # For reproducibility
+sampled_no_subset <- no_subset[sample(nrow(no_subset), num_yes), ]
+
+# Subset rows where 'immunoSeq' is "Yes"
+yes_subset <- anno_HLA_table[anno_HLA_table$immunoSeq == "Yes", ]
+
+# Combine the sampled "No" subset with the "Yes" subset to create a balanced data frame
+balanced_df <- rbind(yes_subset, sampled_no_subset)
+
+#run feature selection..
+
+#Now I need to decide what columns to keep. 
+colnames(balanced_df)
+#keep = c(2,3,4,8,11,12,15:22)
+#seq # - no
+#peptide - make rownames?
+#start - does location make a difference? maybe keep one round
+#end - same as start
+#peptide length - no
+#allele - no
+#peptide index - no
+#median binding percentile - yes?
+#netmhcpan_el core - no
+
+
+ORFlist_unique %>% filter(ORF_type != "annotated") %>% filter(nine_mer_count <= 92) %>% select(protein, islet, HLA_presented_hi) %>% table()
+
+```
+
+
+
+```{r}
+#DON'T RUN THIS UNLESS YOU HAVE
+#protocol: https://nextgen-tools.iedb.org/pipeline/ef4213f4-9293-4445-969e-3bbbf34e3632
+
+# HLA_table1 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_9001-9500.csv"))
+# HLA_table2 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_9501-10000.csv"))
+# HLA_table3 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_10001-10500.csv"))
+# HLA_table4 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_10501-11000.csv"))
+# HLA_table5 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_11001-11500.csv"))
+# HLA_table6 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_11501-12000.csv"))
+# HLA_table7 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_12001-12500.csv"))
+# HLA_table8 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_12501-13000.csv"))
+# HLA_table9 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_13001-13500.csv"))
+# HLA_table10 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_13501-14000.csv"))
+# HLA_table11 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_14001-14500.csv"))
+# HLA_table12 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_14501-15000.csv"))
+# HLA_table13 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_15001-15500.csv"))
+# HLA_table14 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_15501-16000.csv"))
+# HLA_table15 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_16001-16500.csv"))
+# HLA_table16 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_16501-17000.csv"))
+# HLA_table17 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_17001-17500.csv"))
+# HLA_table18 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "peptide_table_17501-END.csv"))
+# 
+# HLA_sequence1 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_9001-9500.csv"))
+# HLA_sequence2 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_9501-10000.csv"))
+# HLA_sequence3 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_10001-10500.csv"))
+# HLA_sequence4 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_10501-11000.csv"))
+# HLA_sequence5 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_11001-11500.csv"))
+# HLA_sequence6 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_11501-12000.csv"))
+# HLA_sequence7 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_12001-12500.csv"))
+# HLA_sequence8 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_12501-13000.csv"))
+# HLA_sequence9 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_13001-13500.csv"))
+# HLA_sequence10 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_13501-14000.csv"))
+# HLA_sequence11 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_14001-14500.csv"))
+# HLA_sequence12 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_14501-15000.csv"))
+# HLA_sequence13 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_15001-15500.csv"))
+# HLA_sequence14 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_15501-16000.csv"))
+# HLA_sequence15 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_16001-16500.csv"))
+# HLA_sequence16 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_16501-17000.csv"))
+# HLA_sequence17 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_17001-17500.csv"))
+# HLA_sequence18 <- read_csv(here("IEDB", "HLA_201only", "MHC Only", "sequence_table_17501-END.csv"))
+# 
+# HLA_sequence1 <- HLA_sequence1[,1:2]
+# HLA_sequence2 <- HLA_sequence2[,1:2]
+# HLA_sequence3 <- HLA_sequence3[,1:2]
+# HLA_sequence4 <- HLA_sequence4[,1:2]
+# HLA_sequence5 <- HLA_sequence5[,1:2]
+# HLA_sequence6 <- HLA_sequence6[,1:2]
+# HLA_sequence7 <- HLA_sequence7[,1:2]
+# HLA_sequence8 <- HLA_sequence8[,1:2]
+# HLA_sequence9 <- HLA_sequence9[,1:2]
+# HLA_sequence10 <- HLA_sequence10[,1:2]
+# HLA_sequence11 <- HLA_sequence11[,1:2]
+# HLA_sequence12 <- HLA_sequence12[,1:2]
+# HLA_sequence13 <- HLA_sequence13[,1:2]
+# HLA_sequence14 <- HLA_sequence14[,1:2]
+# HLA_sequence15 <- HLA_sequence15[,1:2]
+# HLA_sequence16 <- HLA_sequence16[,1:2]
+# HLA_sequence17 <- HLA_sequence17[,1:2]
+# HLA_sequence18 <- HLA_sequence18[,1:2]
+
+HLA_table1 <- left_join(HLA_table1, HLA_sequence1)
+HLA_table2 <- left_join(HLA_table2, HLA_sequence2)
+HLA_table3 <- left_join(HLA_table3, HLA_sequence3)
+HLA_table4 <- left_join(HLA_table4, HLA_sequence4)
+HLA_table5 <- left_join(HLA_table5, HLA_sequence5)
+HLA_table6 <- left_join(HLA_table6, HLA_sequence6)
+HLA_table7 <- left_join(HLA_table7, HLA_sequence7)
+HLA_table8 <- left_join(HLA_table8, HLA_sequence8)
+HLA_table9 <- left_join(HLA_table9, HLA_sequence9)
+HLA_table10 <- left_join(HLA_table10, HLA_sequence10)
+HLA_table11 <- left_join(HLA_table11, HLA_sequence11)
+HLA_table12 <- left_join(HLA_table12, HLA_sequence12)
+HLA_table13 <- left_join(HLA_table13, HLA_sequence13)
+HLA_table14 <- left_join(HLA_table14, HLA_sequence14)
+HLA_table15 <- left_join(HLA_table15, HLA_sequence15)
+HLA_table16 <- left_join(HLA_table16, HLA_sequence16)
+HLA_table17 <- left_join(HLA_table17, HLA_sequence17)
+HLA_table18 <- left_join(HLA_table18, HLA_sequence18)
+
+HLA_table_all <- rbind(HLA_table1, HLA_table2, HLA_table3, HLA_table4, HLA_table5, HLA_table6, HLA_table7, HLA_table8, HLA_table9, HLA_table10, HLA_table11, HLA_table12, HLA_table13, HLA_table14, HLA_table15, HLA_table16, HLA_table17, HLA_table18)
+
+write.csv(HLA_table_all, here("IEDB", "HLA_201only", "MHC Only", "results_9001-END.csv"))
+
+
+HLAtableALL <- rbind(read_csv(here("IEDB", "HLA_201only", "MHC Only", "results_1-9000.csv")), read_csv(here("IEDB", "HLA_201only", "MHC Only", "results_9001-END.csv"))) #this is a huge dataframe. 10 million rows.
+
+HLAtableALL <- left_join(HLAtableALL, ORFlist_unique, by = c("sequence name" = "ORF_ID"))
+
+#However, this will just say if that nuORF had a peptide detected by immunopeptidomics. 
+Immunodata_ALL <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx"))
+
+Immuno_Lo <- read.csv(here("output", "HLA_presented_nuORF_lo.csv"))
+Immuno_Lo <- Immuno_Lo[,c(1,7,8)]
+
+HLAtableALL <- left_join(HLAtableALL, Immuno_Lo, by = c("sequence name" = "ORF_ID"))
+HLAtableALL <- HLAtableALL %>% mutate_all(~ ifelse(is.na(.), "No", .))
+
+#If I want to know if that exact peptide was detected, I need to use those sequences. 
+Immunodata <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx")) 
+Immunodata <- Immunodata %>% filter(`peptide length` == 9)
+
+inner_join(Immunodata, HLAtableALL, by = c("Unmodified peptide sequence" = "peptide")) #17760 of the HLA sequences were found exactly in the immunopep data. 
+
+HLAtableALL <- HLAtableALL %>% dplyr::mutate(immunoSeq = case_when(peptide %in% Immunodata$`Unmodified peptide sequence` ~ 'Yes', !(peptide %in% Immunodata$`Unmodified peptide sequence`) ~ 'No'))
+
+#these aren't needed. 
+HLAtableALL <- HLAtableALL[,3:32]
+
+head(HLAtableALL) %>%View() 
+#smm IC50
+#ann IC50
+#mhcflurry IC50
+
+
+ggplot(HLAtableALL, aes(x=`smm IC50`,  color = immunoSeq)) + 
+  geom_density() + theme_minimal() + xlim(0,50000) #NOT using this. No bimodal distribution.
+
+
+ggplot(HLAtableALL, aes(x=`ann IC50`,  color = immunoSeq)) + 
+  geom_density() + theme_minimal() + xlim(0,50000)
+
+cutoffDensityplot <- ggplot(HLAtableALL, aes(x=`mhcflurry IC50`/1000,  color = immunoSeq)) + 
+  geom_density() + theme_minimal() + geom_vline(xintercept = c(4000/1000, 21000/1000))
+
+#ggsave(plot = cutoffDensityplot, filename = here("plots", "cutoffDensityplot.pdf"), width = 4, height = 3)
+
+
+HLAtableALL$immunoSeq %>% table()
+
+HLAtableALL <- HLAtableALL %>% dplyr::mutate(ImmunoCutOff = case_when(`mhcflurry IC50` < 4000  ~ 'High',`mhcflurry IC50` > 4000 & `mhcflurry IC50` < 21000 ~ 'Low', `mhcflurry IC50` > 21000 ~ 'No'))
+
+#write_csv(HLAtableALL, here("IEDB", "HLA_201only", "MHC Only", "FullDataset.csv"))
+```
+
+
+```{r}
+library(data.table)
+HLAtableALL <- fread(here("IEDB", "HLA_201only", "MHC Only", "FullDataset.csv"))
+
+temp4viewing <- HLAtableALL %>% head(10000)
+
+table1 <- HLAtableALL %>% select(ImmunoCutOff, peptide) %>% unique() %>% select(ImmunoCutOff) %>% table() %>% as.data.frame()
+table1$exp <- "Total"
+
+table2 <-  HLAtableALL %>% filter(immunoSeq == "Yes") %>% select(ImmunoCutOff, peptide) %>% unique() %>% select(ImmunoCutOff) %>% table() %>% as.data.frame()
+table2$exp <- "ImmunoSupport"
+predictedBindersBar <- rbind(table1, table2)
+#791,475 high (2,858 immunopep)
+#2,382,832 low (5,850 immunopep)
+#4,199,973 no (2,064 immunopep)
+
+ggplot(data=predictedBindersBar, aes(x=Freq, y=ImmunoCutOff)) +
+  geom_bar(stat="identity") + facet_grid(~exp, scales="free_x") + theme_minimal() 
+
+#There is so much potential with this data.. so instead of staring at it, let's ask questions. 
+#first, we are not concerned with the data below the cutoff so let's remove that and free some operating space. 
+
+HLAtableALL <- HLAtableALL %>% filter(ImmunoCutOff == "High" | immunoSeq == "Yes")
+
+HLAtableALL <- HLAtableALL %>% dplyr::mutate(Tiers = case_when(ImmunoCutOff == "High" & immunoSeq == "Yes"  ~ 'Tier_1', ImmunoCutOff != "High" & immunoSeq == "Yes" ~ 'Tier_2', ImmunoCutOff == "High" & immunoSeq == "No" ~ 'Tier_3'))
+
+#write_csv(HLAtableALL, here("IEDB", "HLA_201only", "MHC Only", "FullDataset_TierFiltered.csv")) #now I can come back to this point more easily since it is a large file. 
+
+
+
+HLAtableALL <- HLAtableALL[,c(1,19,21,23:32)]
+
+HLAtableALL <- HLAtableALL %>% arrange(ORF_type)
+
+tier1 <- HLAtableALL %>% filter(Tiers == "Tier_1")
+tier2 <- HLAtableALL %>% filter(Tiers == "Tier_2")
+tier3 <- HLAtableALL %>% filter(Tiers == "Tier_3")
+
+
+
+# Identify duplicates and collect duplicate ORF_IDs
+tier1_unique <- tier1 %>%
+  group_by(peptide) %>%
+  mutate(duplicated_geneID = if (n() > 1) paste(unique(`sequence name`), collapse = ", ") else NA_character_, duplicated_ORF_type = if (n() > 1) paste(unique(ORF_type), collapse = ", ") else NA_character_, duplicated_ORF_type_list = if (n() > 1) paste(sort(ORF_type, decreasing = TRUE), collapse = ", ") else NA_character_, is_duplicated = if (n() > 1) "yes" else "no", duplication_count = n()) %>%
+  filter(row_number() == 1) %>% # Keeps only the first instance of each peptide
+  ungroup()
+
+tier2_unique <- tier2 %>%
+  group_by(peptide) %>%
+  mutate(duplicated_geneID = if (n() > 1) paste(unique(`sequence name`), collapse = ", ") else NA_character_, duplicated_ORF_type = if (n() > 1) paste(unique(ORF_type), collapse = ", ") else NA_character_, duplicated_ORF_type_list = if (n() > 1) paste(sort(ORF_type, decreasing = TRUE), collapse = ", ") else NA_character_, is_duplicated = if (n() > 1) "yes" else "no", duplication_count = n()) %>%
+  filter(row_number() == 1) %>% # Keeps only the first instance of each peptide
+  ungroup()
+
+tier3_unique <- tier3 %>%
+ group_by(peptide) %>%
+  mutate(duplicated_geneID = if (n() > 1) paste(unique(`sequence name`), collapse = ", ") else NA_character_, duplicated_ORF_type = if (n() > 1) paste(unique(ORF_type), collapse = ", ") else NA_character_, duplicated_ORF_type_list = if (n() > 1) paste(sort(ORF_type, decreasing = TRUE), collapse = ", ") else NA_character_, is_duplicated = if (n() > 1) "yes" else "no", duplication_count = n()) %>%
+  filter(row_number() == 1) %>% # Keeps only the first instance of each peptide
+  ungroup()
+
+uniq_HLAtbl <- rbind(tier1_unique, tier2_unique, tier3_unique)
+
+#Need to save these lists and send to Holger. 
+toSave <- uniq_HLAtbl %>% arrange(Tiers, `mhcflurry IC50`) %>% select(Tiers, peptide, `mhcflurry IC50`)
+toSave$`mhcflurry IC50` <- toSave$`mhcflurry IC50`/1000
+colnames(toSave) <- c("Tiers", "Peptide", "IC50, uM")
+#write_csv(toSave, here("IEDB", "HLA_201only", "MHC Only", "Peptides_Tiers1-3.csv"))
+
+rm(toSave) #keep these large datasets cleaned up!
+
+rm(tier1_unique, tier2_unique, tier3_unique, tier1, tier2, tier3)
+
+uniq_HLAtbl_bar <- uniq_HLAtbl %>% select(Tiers, is_duplicated) %>% table() %>% as.data.frame()
+
+ggplot(data=uniq_HLAtbl_bar, aes(x=is_duplicated, y=Freq, fill=is_duplicated)) +
+  geom_bar(stat="identity") + theme_minimal() + facet_wrap(~Tiers, scales = "free")
+#so ~50% of each tier is duplicated. 
+
+#how does this relate to categories? 
+
+tbldups <- uniq_HLAtbl %>% group_by(Tiers) %>% select(ORF_type, duplicated_ORF_type) %>% table() %>% as.data.frame()
+tbldups <- tbldups %>% filter(Freq != 0)
+
+#Need to simplify this into anno and nuORFs cuz too many categories to plot. 
+
+uniq_HLAtbl <- uniq_HLAtbl %>%
+  mutate(
+    mapping = case_when(
+      is.na(duplicated_ORF_type) ~ "single", # If duplicated_ORF_type is NA
+      duplicated_ORF_type == "annotated" ~ "multi-anno", # If duplicated_ORF_type is exactly "annotated"
+      grepl("annotated,", duplicated_ORF_type) ~ "multi-anno-novel", # If duplicated_ORF_type contains "annotated,"
+      TRUE ~ "multi-novel" # All other cases
+    )
+  )
+
+tbldups2 <- uniq_HLAtbl %>% select(Tiers, mapping) %>% table() %>% as.data.frame()
+
+
+ggplot(data=tbldups2, aes(x=mapping, y=log10(Freq), fill=mapping)) +
+  geom_bar(stat="identity") + theme_minimal() + facet_wrap(~Tiers, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5) # Rotate x-axis text 90 degrees
+  )
+
+ggplot(data=tbldups2 %>% filter(Tiers == "Tier_3"), aes(x=mapping, y=Freq, fill=mapping)) +
+  geom_bar(stat="identity") + theme_minimal() + facet_wrap(~Tiers, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5) # Rotate x-axis text 90 degrees
+  )
+
+uniq_HLAtbl %>% filter(Tiers == "Tier_2" & is_duplicated == "no") %>% select(ORF_type) %>% table()
+uniq_HLAtbl %>% filter(Tiers == "Tier_2" & is_duplicated == "yes") %>% select(mapping) %>% table()
+
+#Q1: where are the peptides coming from? annotated or nuORF? Are they unique?
+
+uniq_HLAtbl <- uniq_HLAtbl %>%
+  mutate(new_column = ifelse(mapping == "single", ORF_type, mapping)) %>% mutate(new_column = ifelse(new_column %in% c("dORF", "novel", "uORF", "other"), "nuORF", new_column))
+
+
+
+uniq_HLAtbl_stats <- uniq_HLAtbl %>% select(is_duplicated, new_column, Tiers) %>% table() %>% as.data.frame()
+
+uniq_HLAtbl_stats <- uniq_HLAtbl_stats %>% filter(Freq != 0)
+
+uniq_HLAtbl_stats$Freq <- log10(uniq_HLAtbl_stats$Freq)
+
+nineMerbar <- ggplot(uniq_HLAtbl_stats, aes(x = is_duplicated, y = log10(Freq), fill = new_column)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    x = "Is Duplicated",
+    y = "Log10(Freq)",
+    fill = "ORF Type",
+    title = "Stacked Bar Plot of ORF Types by Duplication Status"
+  ) +
+  theme_minimal() + facet_wrap(~Tiers+is_duplicated, scales = "free", ncol = 2)
+
+ggsave(plot = nineMerbar, filename = here("plots", "nineMer_bar_mappingOrigins.pdf"))
+
+
+nineMerbar_Dups <- ggplot(uniq_HLAtbl_stats, aes(x = is_duplicated, y = Freq, fill = is_duplicated)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    x = "Is Duplicated",
+    y = "Log10(Freq)",
+    fill = "Duplicated",
+    title = "Duplication Status"
+  ) +
+  theme_minimal() + facet_wrap(~Tiers, scales = "free")
+
+ggsave(plot = nineMerbar_Dups, filename = here("plots", "nineMer_bar_mappingOrigins_Simple.pdf"))
+
+
+#so now we are going to ignore the multimapping and just deal with having multiples. 
+#the question I want to know now is of the nuORFs/annoORFs we've identified, what percentage is mapping to each tier? So no longer do unique. 
+
+#take ORFlist_unique and ask for each ORF, is it found in Tier1/Tier2/Tier3
+
+tier1 <- HLAtableALL %>% filter(Tiers == "Tier_1")
+tier2 <- HLAtableALL %>% filter(Tiers == "Tier_2")
+tier3 <- HLAtableALL %>% filter(Tiers == "Tier_3")
+
+ORFlist_unique <- ORFlist_unique %>% mutate(Tier1 = case_when(ORFlist_unique$ORF_ID %in% tier1$`sequence name` ~ "yes", !(ORFlist_unique$ORF_ID %in% tier1$`sequence name`) ~ "no")) %>% mutate(Tier2 = case_when(ORFlist_unique$ORF_ID %in% tier2$`sequence name` ~ "yes", !(ORFlist_unique$ORF_ID %in% tier2$`sequence name`) ~ "no")) %>% mutate(Tier3 = case_when(ORFlist_unique$ORF_ID %in% tier3$`sequence name` ~ "yes", !(ORFlist_unique$ORF_ID %in% tier3$`sequence name`) ~ "no"))
+
+
+stats1 <- ORFlist_unique %>% select(ORF_type, Tier1) %>% table() %>% as.data.frame()
+colnames(stats1) <- c("ORF_type", "Exists", "Freq")
+stats1$Tier <- "Tier1"
+
+stats2 <- ORFlist_unique %>% select(ORF_type, Tier2) %>% table() %>% as.data.frame()
+colnames(stats2) <- c("ORF_type", "Exists", "Freq")
+stats2$Tier <- "Tier2"
+
+stats3 <- ORFlist_unique %>% select(ORF_type, Tier3) %>% table() %>% as.data.frame()
+colnames(stats3) <- c("ORF_type", "Exists", "Freq")
+stats3$Tier <- "Tier3"
+
+ORFper_stats <- rbind(stats1, stats2, stats3)
+
+ORFper_stats$Exists <- factor(ORFper_stats$Exists, levels = c("yes", "no"))
+
+
+ggplot(ORFper_stats, aes(x = ORF_type, y = Freq, fill = Exists)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "",
+    y = "",
+    fill = "",
+    title = ""
+  ) +
+  theme_minimal() + facet_wrap(~Tier, scales = "free") + theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) # Rotate x-axis text 90 degrees
+
+ORFper_stats <- ORFper_stats %>% pivot_wider(names_from = Exists, values_from = Freq)
+ORFper_stats$percent <- (ORFper_stats$yes/(ORFper_stats$no+ORFper_stats$yes)) *100
+
+ggplot(ORFper_stats, aes(x = ORF_type, y = percent, fill = Tier)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "",
+    y = "Percent ORFs",
+    fill = "",
+    title = "Percent of ORFs that contributed a 9mer"
+  ) +
+  theme_minimal() + facet_wrap(~ORF_type, scales = "free", nrow = 1) + theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) # Rotate x-axis text 90 degrees
+
+
+#Q2: On average, how many peptides map to a given ORF? Are nuORFs enriched if we take into account length? 
+ORFlist$nchar <- ORFlist$AAseq %>% nchar()
+
+table5 <- HLAtableALL %>% select(peptide, `sequence name`, ORF_type, Tiers) %>% unique() %>% select(`sequence name`,Tiers) %>% table() %>% as.data.frame()
+table5 <- table5 %>% filter(Freq !=0)
+table5 <- left_join(table5, ORFlist[,c(1,3,8)], by = c("sequence.name" = "ORF_ID"))
+table5$lengthNorm <- table5$Freq/table5$nchar
+
+table5$ORF_type <- factor(table5$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
+
+colors <- c("#969696", "#009E73", "#56B4E9", "#E69F00", "#CC79A7")
+
+freqLengthORFs <- ggplot(table5, aes(y=log10(lengthNorm), x = ORF_type, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(Frequency/Length)") + facet_wrap(~Tiers, scales = "free") + theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+ggsave(plot = freqLengthORFs, filename = here("plots", "freqLengthORFs_box.pdf"), width = 5, height = 4)
+
+
+data2 <- table5 %>% filter(Tiers == "Tier_1")
+pairwise.wilcox.test(data2$lengthNorm, data2$ORF_type,
+                 p.adjust.method = "BH")
+
+data2 <- table5 %>% filter(Tiers == "Tier_2")
+pairwise.wilcox.test(data2$lengthNorm, data2$ORF_type,
+                 p.adjust.method = "BH")
+
+data2 <- table5 %>% filter(Tiers == "Tier_3")
+pairwise.wilcox.test(data2$lengthNorm, data2$ORF_type,
+                 p.adjust.method = "BH")
+
+TPM_TE <- readxl::read_xlsx(here("output", "TPM_TEdata.xlsx"))
+
+HLAtableALL <- left_join(HLAtableALL, TPM_TE)
+
+HLAtableALL$ORF_type <- factor(HLAtableALL$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
+
+ggplot(HLAtableALL %>% filter(ORF_type != "other"), aes(y=log10(NormMeanRibo), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(NormMeanRibo)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+ggplot(HLAtableALL %>% filter(ORF_type != "other"), aes(y=log10(NormMeanRNA), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(NormMeanRNA)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+ggplot(HLAtableALL %>% filter(ORF_type != "other"), aes(y=log10(TE), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("Log10(TE)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+#hmmm I think I want to see a comparison to the bulk data. So I need to build that. 
+
+peps <- HLAtableALL %>% select(peptide, `sequence name`, gene_id, ORF_type, Tiers)
+allPeps <- ORFlist_unique %>% select(ORF_ID, gene_id, ORF_type)
+allPeps$Tiers <- "Total"
+allPeps$peptide <- "XXXXXXXX"
+
+allPeps <- allPeps[,c(5,1,2,3,4)]
+
+colnames(peps) <- c("peptide", "ORF_ID", "gene_id", "ORF_type", "Tiers")
+allPeps <- rbind(allPeps, peps)
+
+allPeps <- left_join(allPeps, TPM_TE)
+
+allPeps$ORF_type <- factor(allPeps$ORF_type, order = TRUE, levels =c('annotated', 'novel', 'uORF', "dORF", "other"))
+
+tiersRibo <- ggplot(allPeps %>% filter(ORF_type != "other"), aes(y=log10(NormMeanRibo), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(NormMeanRibo)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+ggsave(plot = tiersRibo, filename = here("plots", "tiersRibo_box.pdf"), width = 5, height = 4)
+
+data2 <- allPeps %>% filter(ORF_type == "annotated")
+pairwise.wilcox.test(data2$NormMeanRibo, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "novel")
+pairwise.wilcox.test(data2$NormMeanRibo, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "uORF")
+pairwise.wilcox.test(data2$NormMeanRibo, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "dORF")
+pairwise.wilcox.test(data2$NormMeanRibo, data2$Tiers,
+                 p.adjust.method = "BH")
+
+allPeps %>% select(ORF_type, Tiers) %>% table()
+
+ggplot(allPeps %>% filter(ORF_type != "other"), aes(y=log10(NormMeanRNA), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(NormMeanRNA)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+tiersTE <- ggplot(allPeps %>% filter(ORF_type != "other"), aes(y=log10(TE), x = Tiers, fill = ORF_type)) + geom_boxplot(outliers = FALSE) + theme_minimal() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylab("log10(TE)") + facet_wrap(~ORF_type, scales = "free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + scale_fill_manual(values = colors)
+
+ggsave(plot = tiersTE, filename = here("plots", "tiersTE_box.pdf"), width = 5, height = 4)
+
+data2 <- allPeps %>% filter(ORF_type == "annotated")
+pairwise.wilcox.test(data2$TE, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "novel")
+pairwise.wilcox.test(data2$TE, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "uORF")
+pairwise.wilcox.test(data2$TE, data2$Tiers,
+                 p.adjust.method = "BH")
+
+data2 <- allPeps %>% filter(ORF_type == "dORF")
+pairwise.wilcox.test(data2$TE, data2$Tiers,
+                 p.adjust.method = "BH")
+```
+
+

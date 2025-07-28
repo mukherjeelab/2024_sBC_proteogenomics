@@ -1,0 +1,157 @@
+---
+title: "21-Heatmaps"
+author: "Kathryn Walters"
+date: "2025-07-01"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggVennDiagram)
+library(ggthemes)
+library(ggplot2)
+library(readr)
+library(cowplot)
+
+```
+
+
+```{r}
+#this is for Annotated ORFs
+matrix_file <- gzfile(here("accessories", "ALLsamplesMatrix_Anno.gz"), open = "rt")
+mat <- read.table(gzfile(here("accessories", "ALLsamplesMatrix_Anno.gz")),
+                  header = FALSE, sep = "\t", skip = 1, stringsAsFactors = FALSE)
+
+
+# Separate metadata and signal
+meta <- mat[, 1:6]
+signal <- mat[, 7:ncol(mat)]  # the 200 bin columns
+
+# Assuming 2 samples with 100 bins each
+bins_per_sample <- ncol(signal) / 2
+
+# Split by sample
+sample1 <- signal[, 1:bins_per_sample]
+sample2 <- signal[, (bins_per_sample + 1):(2 * bins_per_sample)]
+
+# Sum signal across bins per region
+sample1_sum <- rowSums(sample1)
+sample2_sum <- rowSums(sample2)
+
+# Combine into a clean data frame
+signal_summary <- data.frame(
+  chr    = meta[, 1],
+  start  = meta[, 2],
+  end    = meta[, 3],
+  name   = meta[, 4],
+  strand = meta[, 6],
+  sample1_signal = sample1_sum,
+  sample2_signal = sample2_sum
+)
+
+
+hist(log2(signal_summary$sample1_signal+1), breaks = 50)
+abline(v = log2(0+1), col = "red", lty = 2)
+
+hist(log2(signal_summary$sample2_signal+1), breaks = 50)
+abline(v = log2(0+1), col = "red", lty = 2)
+
+# Mean
+mean_sample1 <- mean(signal_summary$sample1_signal)
+mean_sample2 <- mean(signal_summary$sample2_signal)
+
+# Median
+median_sample1 <- median(signal_summary$sample1_signal)
+median_sample2 <- median(signal_summary$sample2_signal)
+
+
+# Log-transform the signals (add 1 to avoid log2(0))
+signal_summary$log2_sample1 <- log2(signal_summary$sample1_signal + 1)
+signal_summary$log2_sample2 <- log2(signal_summary$sample2_signal + 1)
+
+# Sample 1: percent > 0
+percent_sample1_above0 <- mean(signal_summary$log2_sample1 > 0) * 100
+
+# Sample 2: percent > 0
+percent_sample2_above0 <- mean(signal_summary$log2_sample2 > 0) * 100
+
+# Print
+cat(sprintf("Sample 1 (Untreated samples): %.2f%% of regions have signal > 1\n", percent_sample1_above0))
+cat(sprintf("Sample 2 (Cytokine treated samples): %.2f%% of regions have signal > 1\n", percent_sample2_above0))
+
+
+```
+
+
+```{r}
+#this is for Nu ORFs
+matrix_file <- gzfile(here("accessories", "ALLsamplesMatrix_nu.gz"), open = "rt")
+mat <- read.table(gzfile(here("accessories", "ALLsamplesMatrix_nu.gz")),
+                  header = FALSE, sep = "\t", skip = 1, stringsAsFactors = FALSE)
+
+
+# Separate metadata and signal
+meta <- mat[, 1:6]
+signal <- mat[, 7:ncol(mat)]  # the 200 bin columns
+
+# Assuming 2 samples with 100 bins each
+bins_per_sample <- ncol(signal) / 2
+
+# Split by sample
+sample1 <- signal[, 1:bins_per_sample]
+sample2 <- signal[, (bins_per_sample + 1):(2 * bins_per_sample)]
+
+# Sum signal across bins per region
+sample1_sum <- rowSums(sample1)
+sample2_sum <- rowSums(sample2)
+
+# Combine into a clean data frame
+signal_summary <- data.frame(
+  chr    = meta[, 1],
+  start  = meta[, 2],
+  end    = meta[, 3],
+  name   = meta[, 4],
+  strand = meta[, 6],
+  sample1_signal = sample1_sum,
+  sample2_signal = sample2_sum
+)
+
+
+hist(log2(signal_summary$sample1_signal+1), breaks = 50)
+abline(v = log2(0+1), col = "red", lty = 2)
+
+hist(log2(signal_summary$sample2_signal+1), breaks = 50)
+abline(v = log2(0+1), col = "red", lty = 2)
+
+# Mean
+mean_sample1 <- mean(signal_summary$sample1_signal)
+mean_sample2 <- mean(signal_summary$sample2_signal)
+
+# Median
+median_sample1 <- median(signal_summary$sample1_signal)
+median_sample2 <- median(signal_summary$sample2_signal)
+
+
+# Log-transform the signals (add 1 to avoid log2(0))
+signal_summary$log2_sample1 <- log2(signal_summary$sample1_signal + 1)
+signal_summary$log2_sample2 <- log2(signal_summary$sample2_signal + 1)
+
+# Sample 1: percent > 0
+percent_sample1_above0 <- mean(signal_summary$log2_sample1 > 0) * 100
+
+# Sample 2: percent > 0
+percent_sample2_above0 <- mean(signal_summary$log2_sample2 > 0) * 100
+
+# Print
+cat(sprintf("Sample 1 nuORFs: %.2f%% of regions have signal > 1\n", percent_sample1_above0))
+cat(sprintf("Sample 2 nuORFs: %.2f%% of regions have signal > 1\n", percent_sample2_above0))
+
+
+```
+

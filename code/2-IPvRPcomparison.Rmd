@@ -1,0 +1,623 @@
+---
+title: "IP_v_RP_Comparison"
+author: "Kathryn Walters"
+date: "2024-12-06"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo=FALSE, warning = FALSE, include = FALSE}
+library(here)
+library(tximport)
+library(tidyverse)
+library(viridis)
+library(pheatmap)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(ggrepel)
+library(ggpubr)
+library(scales)
+library(limma)
+library(DESeq2)
+library(plotly)
+library(DT)
+library(apeglm)
+library(dplyr)
+library(cowplot)
+library(ggVennDiagram)
+```
+
+
+```{r metadata, echo=FALSE, warning = FALSE, include = F}
+metadata <- readxl::read_xlsx(here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
+  filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
+
+
+
+metadata <- data.frame(
+  sample=metadata$SampleID,
+  exp=factor(case_when(metadata$Treatment1 == "Riboseq" ~ "rp",
+                      metadata$Treatment1 == "IPRiboSeq" ~ "ip",
+                      T ~ "input")),
+  type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
+          T ~ "rna")),
+  time=factor(metadata$Time_hr),
+  rep=factor(case_when(metadata$Treatment2 == "Rep1" ~ "A",
+                       T ~ "B")
+             )
+) %>% na.omit()
+
+
+metadata$sample <- case_when(metadata$type=="ribo" ~ paste(metadata$sample,"_R2",sep = ""),
+          T ~ metadata$sample)
+
+keepSamples <- c("NM2022_0001_R2", "NM2022_0002_R2", "NM2022_0003_R2", "NM2022_0004_R2", "NM2022_0005_R2", "NM2022_0006_R2", "NM2022_0007_R2", "NM2022_0008_R2", "NM2022_0041", "NM2022_0042", "NM2022_0043", "NM2022_0044")
+metadata <- metadata %>% filter(sample %in% keepSamples)
+
+```
+
+
+
+```{r get expression, echo=FALSE, warning = FALSE, include = FALSE}
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F) %>%   filter(!str_detect(X2, "pre_"))
+
+
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+# create transcript-to-gene mapping
+tx2gene <- geneInfo[,c(2,1)]
+
+gene_symbol <- geneInfo %>% pull(gene_id, symbol) %>% unique()
+
+myquantfiles <- paste("data/",
+                      metadata$sample,
+                      "/quant.sf",
+                      sep = "")
+  
+names(myquantfiles) <- paste(metadata$exp, metadata$type, metadata$time, metadata$rep, sep = "_")
+
+myTxi <- tximport(myquantfiles, type = "salmon", tx2gene = tx2gene)
+
+dataCounts <- as.data.frame(myTxi$counts) %>% rownames_to_column("gene_id")
+#write_csv(dataCounts, here("output", "Riboseq_AllCounts.csv"))
+
+# Look at distribution of sum of counts
+# to determine threshold for calling gene expressed
+
+#hist(log2(rowSums(myTxi$counts[,5:12])), breaks = 30) + abline(v=6)
+
+keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,5:12])) > 7,])
+
+# dataCounts <- as.data.frame(myTxi$abundance) %>% rownames_to_column()
+# write_csv(dataCounts, here("output", "Allcounts.csv"))
+# write_csv(gene_symbol, here("output", "geneSymbols.csv"))
+
+
+```
+
+
+## QC
+
+
+```{r counts, warning=FALSE, message=FALSE, echo=FALSE}
+
+tmpCounts <- colSums(myTxi$counts) %>% as.data.frame() %>% rownames_to_column(var = "sample") %>% separate(data = ., col = sample, into = c("exp","type","time","rep"), remove = F)
+
+colnames(tmpCounts)[6] <- "counts"
+
+
+ggplot(data=tmpCounts %>% filter(type!="rna"), aes(x=paste(exp,time), y=counts, fill=rep)) +
+  scale_fill_brewer(palette="Paired") +
+  geom_bar(stat="identity",position=position_dodge()) +
+  xlab("") +
+  ggtitle("counts per lib") +
+  theme_minimal() 
+
+```
+
+
+```{r qc clust, echo=FALSE, warning = FALSE, message=FALSE, fig.height=7}
+qcinput <- log2(myTxi$abundance[keepGenes,5:12] + 1)
+
+# calculate the correlations of the contents of each of the 15 columns
+qcCor <- cor(qcinput, method = "spearman")
+
+nCut <- 2
+qcHeatmap <- pheatmap::pheatmap(
+  qcCor,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  cutree_cols = nCut,
+  cutree_rows = nCut,
+  border_color = "black",
+  main="",
+  display_numbers = F)
+
+ggsave(plot = qcHeatmap, filename = here("plots", "SuppFig1_qcHeatmap.pdf"), device = "pdf", units = "in", width = 6, height = 6, dpi = 320)
+```
+
+
+## PCA analysis
+
+
+```{r qc pca, echo=FALSE, warning = FALSE, message=FALSE, fig.height=4}
+
+pca_data <- prcomp(qcinput, center = T, scale. = T) 
+
+pca_data_info <- summary(pca_data) 
+
+# we make a dataframe out of the rotations and will use this to plot
+pca_plot_data <- data.frame(pca_data$rotation) 
+
+# create ID column populated by row names
+pca_plot_data$ID <- rownames(pca_plot_data)
+
+# separate names into three separate identifiers
+pca_plot_data <- pca_plot_data %>% separate(col = ID, sep = "_", into = c("exp","sample","time","rep"))
+
+pca_plot_data$sample <- factor(pca_plot_data$sample)
+
+pca_plot_data$rep <- factor(pca_plot_data$rep)
+
+pca_plot_data$exp <- factor(pca_plot_data$exp)
+
+
+labelPosition <- pca_plot_data %>% group_by(sample,exp,time,rep) %>% dplyr::select(PC1, PC2) %>% summarise(mPC1=mean(PC1), mPC2=mean(PC2))
+
+# define colors for PCA plot points
+#myCols <- c("red","blue")
+
+qc_pca <- ggplot(pca_plot_data, aes(x=PC1, y=PC2, color=exp, shape=time)) +
+  geom_point(size=2) + 
+  theme_classic() +
+  ggtitle("hPSC vs definitive endoderm") +
+  scale_color_manual(values = viridis(n=3, end = .8)) +
+  xlab(paste("PC1 (%",100*round(pca_data_info$importance[2,1], digits = 3),")", sep = "")) +
+  ylab(paste("PC2 (%",100*round(pca_data_info$importance[2,2], digits = 3),")", sep = "")) 
+
+qc_pca
+
+# ggsave(plot = qc_pca, filename = here("plots", "qc_PCAplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+```
+
+
+
+##Differential Gene Expression - IP vs RP within Timepoints Comparison
+
+
+```{r volcano plots, message=FALSE, warning=FALSE, echo=FALSE}
+allCounts <- round(myTxi$counts[keepGenes,],0) #rounding the counts to the nearest whole number
+metadata$time <- relevel(factor(metadata$time), ref = "0") #factoring based on time
+
+#separating counts for each experiment type (RNA,Ribo,IP)
+rna_counts <- as.matrix(allCounts[,grep(pattern = "rna",colnames(allCounts))]) 
+rp_ribo_counts <- as.matrix(allCounts[,grep(pattern = "rp_ribo",colnames(allCounts))])
+ip_ribo_counts <- as.matrix(allCounts[,grep(pattern = "ip_ribo",colnames(allCounts))])
+
+ribo_0hr_counts <- as.matrix(allCounts[,grep(pattern = "ribo_0",colnames(allCounts))])
+ribo_36hr_counts <- as.matrix(allCounts[,grep(pattern = "ribo_36",colnames(allCounts))])
+
+#Running DeSeq for the IP and RP samples at the 0hr timepoint
+sample_info_0hrRibo <- metadata %>% dplyr::select(-sample) %>% filter(type=="ribo" & time == "0") %>% select(-type)
+sample_info_0hrRibo <- sample_info_0hrRibo[c(3,4,1,2),]
+ribo_0hr_counts <- ribo_0hr_counts[,c(3,4,1,2)]
+ddsMat_0hrRibo <- DESeqDataSetFromMatrix(countData = ribo_0hr_counts, colData = sample_info_0hrRibo, design = ~exp)
+ddsMat_0hrRibo <- DESeq(ddsMat_0hrRibo)
+
+res_0hrRibo <- results(ddsMat_0hrRibo, name=resultsNames(ddsMat_0hrRibo)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_0hrRibo <- lfcShrink(dds = ddsMat_0hrRibo, res = res_0hrRibo, coef = resultsNames(ddsMat_0hrRibo)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") 
+geneInfo2 <- geneInfo[-2] %>% distinct()
+res_0hrRibo <- left_join(res_0hrRibo, geneInfo2)
+res_0hrRibo$biotype %>% table()
+res_0hrRibo <- res_0hrRibo %>% filter(biotype == "protein_coding")
+
+#summarize the number of transcripts that meet our cutoffs for significant changes either up or down.
+res_0hrRibo[which(res_0hrRibo$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(rna=case_when(log2FoldChange > 0 ~ "higher IP",
+                      T ~ "lower IP")) %>%
+  pull(rna) %>%
+  table()
+
+#log2(1.5) -> larger than 1.5 fold difference and pvalue < 0.05
+res_0hrRibo$diffexpressed <- "NO"
+res_0hrRibo$diffexpressed[res_0hrRibo$log2FoldChange > 1.5 & res_0hrRibo$padj < 0.05] <- "UP"
+res_0hrRibo$diffexpressed[res_0hrRibo$log2FoldChange < -1.5 & res_0hrRibo$padj < 0.05] <- "DOWN"
+
+methodDE_0hr <- res_0hrRibo %>% filter(diffexpressed =="DOWN" | diffexpressed =="UP")
+
+res_0hrRibo$diffexpressed %>% table
+
+volcano0hr <- ggplot(data=res_0hrRibo, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed)) +
+        geom_point() + 
+        theme_minimal() +
+        scale_color_manual(values=c("blue", "black", "red"))
+
+#ggsave(plot = volcano0hr, filename = here("plots", "volcano_0hr.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+#write_csv(res_0hrRibo, here("output", "res_0hrRibo_Volcanovalues.csv"))
+
+ribo_0hr_counts <- ribo_0hr_counts %>% as.data.frame %>% rownames_to_column("gene_id")
+ribo_0hr_counts <- left_join(ribo_0hr_counts, geneInfo2)
+
+mitogenes <- ribo_0hr_counts[grep("MT-", ribo_0hr_counts$symbol), ]
+ribo_0hr_counts$mito <- ifelse(ribo_0hr_counts$symbol %in% mitogenes$symbol, "mito", "other")
+
+res_0hrRibo$mito <- ifelse(res_0hrRibo$symbol %in% mitogenes$symbol, "Mito", "Other")
+
+res_0hrRibo2 <- res_0hrRibo %>% filter(biotype == "protein_coding" | mito == "mito")
+res_0hrRibo2$log2FoldChange <- res_0hrRibo2$log2FoldChange *-1
+
+ggplot(res_0hrRibo2, aes(x=mito, y=-log2FoldChange, fill = mito)) + geom_violin(trim = FALSE, outlier.shape = NA) + xlab("") + ylab("log2FoldChange, RP vs IP") + theme_minimal() + scale_fill_manual(values=c("lightblue", "grey")) + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + ylim(-7,7)
+
+
+mito0hr_density <- ggplot(res_0hrRibo, aes(x=-log2FoldChange, fill=mito)) +
+  geom_density(alpha=0.8, adjust = 3/4) +
+  xlim(-6,6) + 
+  xlab("Log2FoldChange, IP vs RP") + 
+  scale_fill_manual(values=c("blue", "black")) + ylab("Density") + ggtitle("Mitochondrially Encoded mRNA Occupancy\n vs Nuclear Encoded mRNA Occupancy\n IP vs RP, 0hr") +
+  theme_minimal() + labs(fill='') + theme(text = element_text(size = 15))
+
+ggsave(plot = mito0hr_density, filename = here("plots", "Fig1_mitoDensity_0hr.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+ribo_0hr_counts$ip_ribo_0_A <- ribo_0hr_counts$ip_ribo_0_A +1
+ribo_0hr_counts$ratio <- rowSums(ribo_0hr_counts[,4:5])/rowSums(ribo_0hr_counts[,2:5]) *100
+ribo_0hr_counts2 <- ribo_0hr_counts %>% filter(biotype == "protein_coding" | mito == "mito")
+
+ggplot(ribo_0hr_counts2, aes(x=mito, y=ratio, fill = mito)) + geom_violin(trim = FALSE) + xlab("") + ylab("% of Footprints from IP") + theme_minimal() + scale_fill_manual(values=c("lightblue", "grey")) + stat_summary(fun.y=mean, geom="point", shape=23, size=2)
+
+#Running DeSeq for the IP and RP samples at the 36hr timepoint
+sample_info_36hrRibo <- metadata %>% select(-sample) %>% filter(type=="ribo" & time == "36") %>% select(-type)
+ddsMat_36hrRibo <- DESeqDataSetFromMatrix(countData = ribo_36hr_counts, colData = sample_info_36hrRibo, design = ~exp)
+ddsMat_36hrRibo <- DESeq(ddsMat_36hrRibo)
+
+res_36hrRibo <- results(ddsMat_36hrRibo, name=resultsNames(ddsMat_36hrRibo)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_36hrRibo <- lfcShrink(dds = ddsMat_36hrRibo, res = res_36hrRibo, coef = resultsNames(ddsMat_36hrRibo)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") 
+geneInfo2 <- geneInfo[-2] %>% distinct()
+res_36hrRibo <- left_join(res_36hrRibo, geneInfo2)
+res_36hrRibo$biotype %>% table()
+res_36hrRibo <- res_36hrRibo %>% filter(biotype == "protein_coding")
+#summarize the number of transcripts that meet our cutoffs for significant changes either up or down.
+res_36hrRibo[which(res_36hrRibo$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(rna=case_when(log2FoldChange > 0 ~ "higher RP",
+                      T ~ "lower RP")) %>%
+  pull(rna) %>%
+  table()
+
+res_36hrRibo$diffexpressed <- "NO"
+res_36hrRibo$diffexpressed[res_36hrRibo$log2FoldChange > 1.5 & res_36hrRibo$padj < 0.05] <- "UP"
+res_36hrRibo$diffexpressed[res_36hrRibo$log2FoldChange < -1.5 & res_36hrRibo$padj < 0.05] <- "DOWN"
+
+res_36hrRibo$delabel <- NA
+res_36hrRibo$delabel[res_36hrRibo$diffexpressed != "NO"] <- res_36hrRibo$symbol[res_36hrRibo$diffexpressed != "NO"]
+
+res_36hrRibo$diffexpressed %>% table
+
+methodDE_36hr <- res_36hrRibo %>% filter(diffexpressed =="DOWN" | diffexpressed =="UP")
+
+volcano36hr <- ggplot(data=res_36hrRibo, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed)) +
+        geom_point() + 
+        theme_minimal() +
+        scale_color_manual(values=c("blue", "black", "red"))
+
+# ggsave(plot = volcano36hr, filename = here("plots", "volcano_36hr.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+res_36hrRibo$mito <- ifelse(res_36hrRibo$symbol %in% mitogenes$symbol, "Mito", "Other")
+
+mito36hr_density <- ggplot(res_36hrRibo, aes(x=-log2FoldChange, fill=mito)) +
+  geom_density(alpha=0.8, adjust = 3/4) +
+  xlim(-6,6) + 
+  xlab("Log2FoldChange, IP vs RP") + 
+  scale_fill_manual(values=c("blue", "black")) + ylab("Density") + ggtitle("Mitochondrially Encoded mRNA Occupancy\n vs Nuclear Encoded mRNA Occupancy\n IP vs RP, 36hr") +
+  theme_minimal() + labs(fill='') + theme(text = element_text(size = 15))
+
+#ggsave(plot = mito36hr_density, filename = here("plots", "Fig1_mitoDensity_36hr.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+
+```
+
+
+##TPM Comparison
+
+
+```{r TPM comparison methods, message=FALSE, warning=FALSE, echo=FALSE}
+
+##LFC Comparison
+
+#Start with 0hr Comparing TPM of RP vs IP
+
+#need to get TPM
+#tximport can take salmon files and determine TPM
+txiTPM <- tximport(myquantfiles, type = 'salmon', tx2gene = tx2gene, dropInfReps = TRUE, countsFromAbundance = 'lengthScaledTPM') 
+
+#Making TPM into its own table in case that is needed. Includes GeneID. 
+tpms <- txiTPM$abundance %>%
+as.data.frame(.) 
+
+tpms <- tpms %>% as.data.frame() %>% rownames_to_column("gene_id")
+#write_csv(tpms, here("output", "tpms_Ribodata.csv"))
+tpms <- tpms %>% column_to_rownames("gene_id")
+tpms0hr <- tpms[,grep(pattern = "ribo_0",colnames(tpms))] %>% rownames_to_column(var = 'gene_id')
+#tpms0hr <- left_join(as.data.frame(keepGenes), tpms0hr, by = c("keepGenes" = "gene_id"))
+
+tpms0hr$RPmeanTPM <- rowMeans(tpms0hr[,2:3])
+tpms0hr$RPmeanTPM[tpms0hr$RPmeanTPM==0]<-NA
+tpms0hr$IPmeanTPM <- rowMeans(tpms0hr[,4:5])
+tpms0hr$IPmeanTPM[tpms0hr$IPmeanTPM==0]<-NA
+tpms0hr_NA <- tpms0hr %>% filter(is.na(RPmeanTPM) | is.na(IPmeanTPM))
+
+tpms0hr_NA <- left_join(tpms0hr_NA, geneInfo2, by = c("gene_id" = "gene_id"))
+tpms0hr_NA <- tpms0hr_NA[-8] %>% distinct()
+#write_csv(tpms0hr_NA, here("output", "NA_TPMvalues.csv"))
+
+tpms0hr <- left_join(tpms0hr, annotation, by = c("gene_id" = "gene_id"))
+tpms0hr$mito <- ifelse(tpms0hr$symbol %in% mitogenes$symbol, "mito", "other")
+
+tpms0hr$mito <- factor(tpms0hr$mito, levels = c("other", "mito"))
+
+tpms0hr <- tpms0hr %>% filter(gene_id %in% keepGenes)
+
+#this plot looks at how the mito genes are different than the others. Not a huge difference. 
+ggplot(tpms0hr, aes(x = log10(RPmeanTPM), y = log10(IPmeanTPM), color = mito, alpha = mito)) + 
+  geom_point() +
+  labs(
+    y = "IP, log10(TPM)", 
+    x = "RP, log10(TPM)", 
+    title = "RP vs IP TPM Comparison, 0 hours"
+  ) +
+  geom_smooth(
+    data = subset(tpms0hr, mito == "other"), 
+    method = "lm", 
+    se = TRUE, 
+    fullrange = FALSE, 
+    level = 0.95, 
+    aes(color = NULL)
+  ) +
+  stat_cor(data = subset(tpms0hr, mito == "other"), aes(label = ..rr.label..)) +
+  theme_minimal() +
+  scale_color_manual(values = c("grey", "black")) +
+  scale_alpha_manual(values = c("other" = .2, "mito" = 1)) # Opaque for "other", transparent for "mito"
+
+
+TPM_0hr <- ggplot(tpms0hr, aes(x = log10(RPmeanTPM), y = log10(IPmeanTPM))) + 
+  geom_point() +
+  labs(
+    y = "IP, log10(TPM)", 
+    x = "RP, log10(TPM)", 
+    title = "RP vs IP TPM Comparison, 0 hours"
+  ) +
+  geom_smooth(
+    data = subset(tpms0hr, mito == "other"), 
+    method = "lm", 
+    se = TRUE, 
+    fullrange = FALSE, 
+    level = 0.95, 
+    aes(color = NULL)
+  ) +
+  stat_cor(data = subset(tpms0hr), aes(label = ..rr.label..)) +
+  theme_minimal()
+
+#ggsave(plot = TPM_0hr, filename = here("plots", "Fig1_TPM_0hr_scatterplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+#Now do 36hour
+tpms36hr <- tpms[,grep(pattern = "ribo_36",colnames(tpms))] %>%
+rownames_to_column(var = 'gene_id')
+
+tpms36hr$RPmeanTPM <- rowMeans(tpms36hr[,2:3]) 
+tpms36hr$RPmeanTPM[tpms36hr$RPmeanTPM==0]<-NA
+tpms36hr$IPmeanTPM <- rowMeans(tpms36hr[,4:5])
+tpms36hr$IPmeanTPM[tpms36hr$IPmeanTPM==0]<-NA
+
+tpms36hr <- tpms36hr %>% filter(gene_id %in% keepGenes)
+
+TPM_36hr <- ggplot(tpms36hr, aes(x=log10(RPmeanTPM), y=log10(IPmeanTPM))) + 
+  geom_point() +
+  labs( y="IP, log10(TPM)", 
+       x="RP, log10(TPM)", 
+       title="RP vs IP TPM Comparison, 36 hours") + geom_smooth(method="lm", se=TRUE, fullrange=TRUE, level=0.95) + stat_cor(aes(label =  ..rr.label..)) + theme_minimal()
+
+#ggsave(plot = TPM_36hr, filename = here("plots", "Fig1_TPM_36hr_scatter.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+```
+
+
+
+
+```{r}
+#heatmap of all the replicates and all the cell types
+matrix_unfiltered <- tpms[,5:12] %>% rownames_to_column("gene_id") %>% filter(gene_id %in% keepGenes) %>% column_to_rownames("gene_id")
+
+matrix_unfiltered <- log2(matrix_unfiltered[,1:8] +1)
+
+
+nCut = 10
+heatmap_tpmsGenes <- pheatmap(matrix_unfiltered, clustering_method = "complete", scale = "column", show_rownames = FALSE,border_color = "black", cutree_cols = 2)
+
+
+pheatmap::pheatmap(
+  matrix_unfiltered,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  cutree_rows = nCut,
+  border_color = "black",
+  main="",
+  display_numbers = F, show_rownames = FALSE)
+
+
+#ggsave(plot = heatmap_tpmsGenes, filename = here("plots", "SuppFig1_heatmap_tpmsGenes.pdf"), device = "pdf", units = "in", width = 6, height = 8, dpi = 320)
+```
+
+
+
+##Differential Gene Expression - Timepoint Comparison
+
+```{r DE timepoints, message=FALSE, warning=FALSE, echo=FALSE}
+
+#Running DeSeq for the RNA samples based on timepoints
+sample_info_rna <- metadata %>% select(-sample) %>% filter(type=="rna") %>% select(-exp)
+ddsMat_rna <- DESeqDataSetFromMatrix(countData = rna_counts, colData = sample_info_rna, design = ~time)
+ddsMat_rna <- DESeq(ddsMat_rna)
+
+res_rna <- results(ddsMat_rna, name=resultsNames(ddsMat_rna)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_rna <- lfcShrink(dds = ddsMat_rna, res = res_rna, coef = resultsNames(ddsMat_rna)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+#summarize the number of transcripts that meet our cutoffs for significant changes either up or down.
+res_rna[which(res_rna$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(rna=case_when(log2FoldChange > 0 ~ "higher rna",
+                      T ~ "lower rna")) %>%
+  pull(rna) %>%
+  table()
+
+#Running DeSeq for Ribosome profiling samples based on timepoints
+rp_sample_info <- metadata %>% select(-sample) %>% filter(exp!="ip") %>% select(-exp)
+rp_ribo_ddsMat <- DESeqDataSetFromMatrix(countData = rp_ribo_counts, colData = rp_sample_info %>% filter(type=="ribo"), design = ~time)
+rp_ribo_ddsMat <- DESeq(rp_ribo_ddsMat)
+
+rp_res_ribo <- results(rp_ribo_ddsMat,name=resultsNames(rp_ribo_ddsMat)[2])
+
+rp_res_ribo <- lfcShrink(dds = rp_ribo_ddsMat, res = rp_res_ribo, coef = resultsNames(rp_ribo_ddsMat)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+rp_ribo <- rp_res_ribo[which(rp_res_ribo$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(ribo=case_when(log2FoldChange > 0 ~ "higher ribo",
+                      T ~ "lower ribo")) 
+rp_ribo %>%
+  pull(ribo) %>%
+  table()
+
+#Running DeSeq for IP samples based on timepoints
+ip_sample_info <- metadata %>% select(-sample) %>% filter(exp!="rp") %>% select(-exp)
+ip_ribo_ddsMat <- DESeqDataSetFromMatrix(countData = ip_ribo_counts, colData = ip_sample_info %>% filter(type=="ribo"), design = ~time)
+ip_ribo_ddsMat <- DESeq(ip_ribo_ddsMat)
+
+ip_res_ribo <- results(ip_ribo_ddsMat, name=resultsNames(ip_ribo_ddsMat)[2])
+
+ip_res_ribo <- lfcShrink(dds = ip_ribo_ddsMat, res = ip_res_ribo, coef = resultsNames(ip_ribo_ddsMat)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+ip_ribo <- ip_res_ribo[which(ip_res_ribo$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(ribo=case_when(log2FoldChange > 0 ~ "higher ribo",
+                      T ~ "lower ribo")) 
+ip_ribo %>%
+  pull(ribo) %>%
+  table()
+
+
+#Comparison of RP and IP samples 
+up_ribo <- list(ip_ribo_up=ip_ribo %>% filter(ribo=="higher ribo") %>% pull(gene_id),
+          rp_ribo_up=rp_ribo %>% filter(ribo=="higher ribo") %>% pull(gene_id))
+
+
+down_ribo <- list(ip_ribo_1down=ip_ribo %>% filter(ribo=="lower ribo") %>% pull(gene_id),
+          rp_ribo_down=rp_ribo %>% filter(ribo=="lower ribo") %>% pull(gene_id))
+
+
+
+tmpVennUpreg <- ggVennDiagram(up_ribo, label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+#ggsave(plot = tmpVennUpreg, filename = here("plots", "Venn_riboUpReg.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+tmpVennDownreg <- ggVennDiagram(down_ribo, label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+#ggsave(plot = tmpVennDownreg, filename = here("plots", "Venn_riboDownReg.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+```
+
+
+##LFC Timepoint Comparison between Methods
+
+```{r LFC method comparison, message=FALSE, echo=FALSE, warning=FALSE}
+
+allCounts <- round(myTxi$counts[keepGenes,],0) #rounding the counts to the nearest whole number
+
+rna_counts <- as.matrix(allCounts[,grep(pattern = "rna",colnames(allCounts))])
+rp_ribo_counts <- as.matrix(allCounts[,grep(pattern = "rp_ribo",colnames(allCounts))])
+rp_sample_info <- metadata %>% select(-sample) %>% filter(exp!="ip") %>% select(-exp)
+rp_all <- cbind.data.frame(rp_ribo_counts,rna_counts)
+
+#Running DeSeq for the RP 0 and 36hr samples
+sample_info_Ribotimepoints <- metadata %>% dplyr::select(-sample) %>% filter(type=="ribo" & exp == "rp") %>% select(-type)
+ddsMat_Ribotimepoints <- DESeqDataSetFromMatrix(countData = rp_ribo_counts, colData = sample_info_Ribotimepoints, design = ~time)
+ddsMat_Ribotimepoints <- DESeq(ddsMat_Ribotimepoints)
+
+res_Ribotimepoints <- results(ddsMat_Ribotimepoints, name=resultsNames(ddsMat_Ribotimepoints)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_Ribotimepoints <- lfcShrink(dds = ddsMat_Ribotimepoints, res = res_Ribotimepoints, coef = resultsNames(ddsMat_Ribotimepoints)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+res_Ribotimepoints <- res_Ribotimepoints %>%
+  as.data.frame %>%
+  mutate(rna=ifelse(padj < 0.05 & log2FoldChange > 2 | padj < 0.05 & log2FoldChange < 2, "sig", "not_sig"))
+
+#Running DeSeq for the IP 0 and 36hr samples
+sample_info_IPtimepoints <- metadata %>% dplyr::select(-sample) %>% filter(type=="ribo" & exp == "ip") %>% select(-type)
+ddsMat_IPtimepoints <- DESeqDataSetFromMatrix(countData = ip_ribo_counts, colData = sample_info_IPtimepoints, design = ~time)
+ddsMat_IPtimepoints <- DESeq(ddsMat_IPtimepoints)
+
+res_IPtimepoints <- results(ddsMat_IPtimepoints, name=resultsNames(ddsMat_IPtimepoints)[2])
+
+#this lfcShrink helps to reduce background noise? A conservative approach.
+res_IPtimepoints <- lfcShrink(dds = ddsMat_IPtimepoints, res = res_IPtimepoints, coef = resultsNames(ddsMat_IPtimepoints)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(annotation, .)
+
+res_IPtimepoints <- res_IPtimepoints %>%
+  as.data.frame %>%
+  mutate(rna=ifelse(padj < 0.05 & log2FoldChange > 2 | padj < 0.05 & log2FoldChange < 2, "sig", "not_sig"))
+
+TimepointLFCcomp <- full_join(res_Ribotimepoints, res_IPtimepoints, by = "gene_id")
+
+#rp_res_ribo[which(rp_res_ribo$padj<0.05), ]
+TimepointLFCcomp <- TimepointLFCcomp %>% filter(rna.x == "sig" | rna.y == "sig")
+
+LFCtimpeoint <-ggplot(TimepointLFCcomp, aes(x=log2FoldChange.x, y=log2FoldChange.y)) + 
+  geom_point() +
+  labs( y="IP, Log2FoldChange 0hr vs 36hr", 
+       x="RP, Log2FoldChange 0hr vs 36 hr", 
+       title="LFC Timepoint Method Comparison") + geom_smooth(method="lm", se=TRUE, fullrange=TRUE, level=0.95) + stat_cor(aes(label =  ..rr.label..)) + theme_minimal()
+
+LFCtimpeoint
+
+#ggsave(plot = LFCtimpeoint, filename = here("plots", "SuppFig1_scatter_LFCTimepointMethod.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+
+# Create a list of data frames
+df_list <- list(Sheet1 = res_0hrRibo, Sheet2 = res_36hrRibo, Sheet3 = res_IPtimepoints, Sheet4 = res_Ribotimepoints)
+
+# Write to an Excel file
+write_xlsx(df_list, here("output", "DEcomparisons.xlsx"))
+
+```
+

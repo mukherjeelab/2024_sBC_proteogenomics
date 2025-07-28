@@ -1,0 +1,254 @@
+---
+title: "8-ORFcalling Dataset Collapsing"
+author: "Kathryn Walters"
+date: "2023-05-11"
+output: html_document
+---
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(Biostrings)
+library(rlist)
+library(ggVennDiagram)
+library(readr)
+library(here)
+library(dplyr)
+```
+
+
+```{r}
+## Summary of RMD contents
+#In this file my goal is to combine the ORFs called by Ribocode and ORFquant into one dataset. I will use gffcompare to compare them and filter from there. gffCompare was run on command line and the files are available in the accessories folder. The data here is used in downstream RMD files and analysis.
+
+#1. Loading data
+
+#2. Using gffCompare to combine datasets
+  #Created the database final_collapsedORFsList.csv which is the final output after using gffCompare to collapse everything. 
+  #Also created the database GeneCollapsedORFs_AllPrograms.csv in case I want a list of what each program called. 
+```
+
+
+# 1. Loading data
+
+
+```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
+ribocode <- read_csv(here("output", "Expression_Filtered_ORFcalling", "RiboCodeFiltered.csv"))
+
+ORFquant <- read_csv(here("output", "Expression_Filtered_ORFcalling", "ORFquant_Filtered.csv"))
+
+```
+
+
+# 2. Using gffCompare to combine datasets
+
+
+```{r gtf combined, warning=FALSE, message=FALSE}
+#this one has ORFquant as the reference file.
+gffCompare_ALL <- read_tsv(here("accessories", "gffCompare", "tryRef.Ribocode_renamed_final_GNchanged2.gtf.tmap"))
+
+#this one has ribocode as the reference file.
+gffCompare_ALL2 <- read_tsv(here("accessories", "gffCompare", "tryRef_OQ.ORFquant_CDS_final_GNchanged2.gtf.tmap"))
+IDswitch <- read_csv(here("accessories", "ORFquant_IDswitchResource.csv")) #need to switch the IDs from transcript to gene level to match Ribocode. 
+
+
+#making lists of things that are marked the same (class code "=") by gffCompare. 
+gffCompare1 <- gffCompare_ALL[,c(3,4)] %>% filter(class_code == "=") %>% dplyr::select(qry_gene_id) %>% unique()
+
+gffCompare2 <- gffCompare_ALL2[,c(1,3)] %>% filter(class_code == "=") %>% dplyr::select(ref_gene_id) %>% unique()
+
+#comparing if these geneIDs are the same based on which file was used as reference. 
+differences <- setdiff(gffCompare2$ref_gene_id, gffCompare1$qry_gene_id)
+differences
+
+differences1 <- setdiff(gffCompare1$qry_gene_id, gffCompare2$ref_gene_id)
+differences1
+
+#So these 6 are ones that are sometimes marked = but not in both datasets. Therefore, we are going to keep them as separate. We are going to change these class codes in the necessary datasets. 
+ORFquantProblems <- c("ENST00000255380.8_780_2549", "ENST00000617528.1_27_404", "ENST00000409556.5_366_4328", "ENST00000281317.9_1217_2464", "ENST00000281830.3_611_994", "ENST00000619474.4_991_1425")
+
+gffCompare_ALL2 <- gffCompare_ALL2 %>% dplyr::mutate(class_codeII = case_when(qry_gene_id %in% ORFquantProblems ~ "c", .default = class_code))
+
+
+#Now let's try to make one dataframe..
+ribocode <- left_join(ribocode, gffCompare_ALL, by = c("ORF_ID" = "qry_gene_id"))
+
+ribocode <- ribocode %>% mutate(keepColumn = case_when(class_code == "=" ~ "Both", .default = "Ribocode"))
+
+
+
+gffCompare_ALL2 <- left_join(gffCompare_ALL2, IDswitch, by = c("qry_gene_id" = "ORF_ID_transcript"))
+
+ORFquant <- left_join(ORFquant, gffCompare_ALL2, by = c("ORF_ID" = "ORF_ID_gene"))
+
+ORFquant <- ORFquant %>% mutate(keepColumn = case_when(class_codeII == "=" ~ "Both", .default = "ORFquant"))
+
+
+OQ1 <- ORFquant[,c(1,2,3,4,17,18)]
+RC1 <- ribocode[,c(1,2,3,4,7,16)]
+
+colnames(OQ1) <- c("ORF_ID", "AAseq", "ORF_type", "gene_id", "class_code", "keepColumn")
+colnames(RC1) <- c("ORF_ID", "AAseq", "ORF_type", "gene_id", "class_code", "keepColumn")
+
+final_nuORFs <- rbind(RC1, OQ1)
+
+#looking at what classifications we have left. Many are the same ORF called, but some unique. This is expected. 
+final_nuORFs %>% pull(class_code) %>% table()
+
+final_nuORFs %>% pull(ORF_type) %>% table()
+
+# Assign priorities to ORF types
+priority_order <- c("annotated" = 1, "uORF" = 2, "dORF" = 3, "novel" = 4, "other" = 5)
+
+# Add a priority column based on ORF type
+final_nuORFs <- final_nuORFs %>%
+  mutate(priority = priority_order[ORF_type])
+
+# Collapse by AAseq, prioritizing ORF type
+ORFlist_unique <- final_nuORFs %>%
+  group_by(AAseq) %>%  # Group by amino acid sequence
+  slice_min(priority, with_ties = FALSE) %>%  # Keep the row with the highest priority (lowest number)
+  ungroup() %>%
+  select(-priority)  # Remove the priority column if no longer needed
+
+# Check the results
+ORFlist_unique %>% pull(ORF_type) %>% table()
+
+
+
+#outputting file with collapsed ORFs. 
+write_csv(ORFlist_unique[,c(1:4)], here("output", "final_collapsedORFsList.csv"))
+
+
+
+
+#just in case I want a full list of anything ever called by either software, I will create that also. 
+ribocode <- read_csv(here("output", "Expression_Filtered_ORFcalling", "RiboCodeFiltered.csv"))
+ORFquant <- read_csv(here("output", "Expression_Filtered_ORFcalling", "ORFquant_Filtered.csv"))
+
+
+colnames(ORFquant) <- c("ORF_ID", "AAseq", "ORF_type", "gene_id", "program")
+
+#I want to apply that unique filter code here too so that the same sequence is not being duplicated. 
+# Add a priority column based on ORF type
+ribocode <- ribocode %>%
+  mutate(priority = priority_order[ORF_type])
+
+# Collapse by AAseq, prioritizing ORF type
+ORFlist_unique_RC <- ribocode %>%
+  group_by(AAseq) %>%  # Group by amino acid sequence
+  slice_min(priority, with_ties = FALSE) %>%  # Keep the row with the highest priority (lowest number)
+  ungroup() %>%
+  select(-priority)  # Remove the priority column if no longer needed
+
+
+ORFlist_unique_RC_2 <- ribocode %>%
+  dplyr::select(ORF_ID, AAseq, ORF_type, gene_id) %>%
+  group_by(AAseq, ORF_type) %>%  # Group by both AAseq and ORF_type
+  mutate(duplicate_id = ifelse(duplicated(AAseq), NA, paste(ORF_ID[duplicated(AAseq)], collapse = ", "))) %>%
+  filter(!duplicated(AAseq)) %>%
+  ungroup()
+
+ribocode %>% pull(ORF_type) %>% table()
+ORFlist_unique_RC %>% pull(ORF_type) %>% table()
+ORFlist_unique_RC_2 %>% pull(ORF_type) %>% table()
+
+
+#now ORFquant
+# Add a priority column based on ORF type
+ORFquant <- ORFquant %>%
+  mutate(priority = priority_order[ORF_type])
+
+# Collapse by AAseq, prioritizing ORF type
+ORFlist_unique_OQ <- ORFquant %>%
+  group_by(AAseq) %>%  # Group by amino acid sequence
+  slice_min(priority, with_ties = FALSE) %>%  # Keep the row with the highest priority (lowest number)
+  ungroup() %>%
+  select(-priority)  # Remove the priority column if no longer needed
+
+
+ORFlist_unique_OQ_2 <- ORFquant %>%
+  dplyr::select(ORF_ID, AAseq, ORF_type, gene_id) %>%
+  group_by(AAseq, ORF_type) %>%  # Group by both AAseq and ORF_type
+  mutate(duplicate_id = ifelse(duplicated(AAseq), NA, paste(ORF_ID[duplicated(AAseq)], collapse = ", "))) %>%
+  filter(!duplicated(AAseq)) %>%
+  ungroup()
+
+ORFquant %>% pull(ORF_type) %>% table()
+ORFlist_unique_OQ %>% pull(ORF_type) %>% table()
+ORFlist_unique_OQ_2 %>% pull(ORF_type) %>% table()
+
+
+ORFlist_unique_RC$program <- "Ribocode"
+ORFlist_unique_OQ$program <- "ORFquant"
+
+
+AllORFs <- rbind(ORFlist_unique_RC, ORFlist_unique_OQ)
+
+
+```
+
+
+```{r}
+#I realized later when characterizing I had one more problem in nuORFs. 
+
+#grabbing only NON-annotated genes
+NOTannoORFs <- AllORFs %>% filter(ORF_type != "annotated")
+NOTannoORFs_NoProgram <- ORFlist_unique %>% filter(ORF_type != "annotated")
+
+RC_NotAnno <- NOTannoORFs %>% filter(program == "Ribocode")
+OQ_NotAnno <- NOTannoORFs %>% filter(program == "ORFquant")
+
+RC_NotAnno %>% pull(ORF_type) %>% table()
+OQ_NotAnno %>% pull(ORF_type) %>% table()
+ORFlist_unique %>% filter(ORF_type != "annotated") %>% pull(ORF_type) %>% table()
+#986 unique sequences, doesn't matter category.
+#979 unique sequences, category does matter. Could be duplicated and in two categories. WHY IS THIS SMALLER?
+
+ORFlist_unique %>% filter(ORF_type != "annotated") %>% dplyr::select(AAseq) %>% unique() %>% nrow()
+#965 unique sequences.
+AllORFs %>% filter(ORF_type != "annotated")%>% dplyr::select(AAseq) %>% unique() %>% nrow()
+#982 unique sequences 
+
+#somewhere this is odd. 
+
+
+ORFlist_unique %>% 
+  filter(ORF_type != "annotated") %>% 
+  dplyr::select(AAseq) %>% 
+  unique() %>% 
+  nrow() #965
+
+AllORFs %>% 
+  filter(ORF_type != "annotated") %>% 
+  dplyr::select(AAseq) %>% 
+  unique() %>% 
+  nrow() #982
+
+collapse_AAseq <- ORFlist_unique %>% filter(ORF_type != "annotated") %>% dplyr::select(AAseq) %>% unique()
+all_AAseq <- AllORFs %>% filter(ORF_type != "annotated") %>% dplyr::select(AAseq) %>% unique()
+
+# Check differences
+setdiff(all_AAseq$AAseq, collapse_AAseq$AAseq)  # Present in AllORFs but not ORFlist_unique
+setdiff(collapse_AAseq$AAseq, all_AAseq$AAseq)  # Present in ORFlist_unique but not AllORFs
+
+missing_in_collapse <- setdiff(all_AAseq$AAseq, collapse_AAseq$AAseq)
+
+toRemoveIDs <- AllORFs %>% 
+  filter(AAseq %in% missing_in_collapse & program == "ORFquant") %>% 
+  pull(ORF_ID)  # Inspect these sequences
+#essentially there are 17 sequences that are being called "other" by ORFquant and being called "annotated" by ribocode. These didn't get caught by other filtering steps somehow. I am going to remove them since I won't be considering them as nuORF anywhere else.
+
+AllORFs <- AllORFs %>% filter(!(ORF_ID %in% toRemoveIDs))
+
+AllORFs %>% 
+  filter(ORF_type != "annotated") %>% 
+  dplyr::select(AAseq) %>% 
+  unique() %>% 
+  nrow() #965!
+
+
+
+
+write_csv(AllORFs, here("output", "GeneCollapsedORFs_AllPrograms.csv"))
+
+```
+
+

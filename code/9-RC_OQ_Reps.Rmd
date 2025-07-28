@@ -1,0 +1,288 @@
+---
+title: "18 - RiboCode_ORFQuant_Replicates"
+author: "Kathryn Walters"
+date: "2024-09-04"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggVennDiagram)
+library(ggthemes)
+library(ggplot2)
+library(readr)
+```
+
+
+```{r}
+
+#ribocode program output
+ribocode_R1 <- read.table(here("input", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsR1.txt"), sep = '\t', header = TRUE)
+
+#ribocode program output
+ribocode_R2 <- read.table(here("input", "Output from ORFcalling Software", "RiboCode_ORFs_result_BcellsR2.txt"), sep = '\t', header = TRUE)
+
+#ORF list
+ORFlist <- readxl::read_excel(here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+
+
+#GetORFlist of Ribocode nuORFs and Anno ORFs
+annoORFs <- ORFlist %>% filter(ORF_type == "annotated" & program == "Ribocode")
+nuORFs <- ORFlist %>% filter(ORF_type != "annotated" & program == "Ribocode") 
+
+#now asking if the ORFid is found in dataset 1
+annoORFs <- annoORFs %>% mutate(Rep1 = case_when(ORF_ID %in% ribocode_R1$ORF_ID ~ "Yes", .default = "No"))
+annoORFs %>% dplyr::select(Rep1) %>% table()
+
+#now asking if the ORFid is found in dataset 2
+annoORFs <- annoORFs %>% mutate(Rep2 = case_when(ORF_ID %in% ribocode_R2$ORF_ID ~ "Yes", .default = "No"))
+annoORFs %>% select(Rep2) %>% table()
+
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes") %>% nrow() #9,176 found in both.
+annoORFs %>% filter(Rep1 == "No" & Rep2 == "No") %>% nrow() #682 found in neither
+annoORFs %>% filter(Rep1 == "No" & Rep2 == "No" & protein == "Yes") %>% nrow() #570 found in neither but had protein support
+
+annoORFs %>% filter(Rep1 == "Yes" & protein == "Yes") %>% nrow() #9,980 Rep1 have protein support.
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "No" & protein == "Yes") %>% nrow() #1,987 Rep1 only have protein support.
+annoORFs %>% filter(Rep2 == "Yes" & protein == "Yes") %>% nrow() #9,413 Rep1 have protein support.
+annoORFs %>% filter(Rep2 == "Yes" & Rep1 == "No" & protein == "Yes") %>% nrow() #1,420 Rep1 only have protein support.
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes" & protein == "Yes") %>% nrow() #7,993 called by both programs have protein support
+annoORFs %>% filter(protein == "Yes") %>% nrow()
+
+
+#Now repeat these steps for the nuORFs. 
+#now asking if the ORFid is found in dataset 1
+nuORFs <- nuORFs %>% mutate(Rep1 = case_when(ORF_ID %in% ribocode_R1$ORF_ID ~ "Yes", .default = "No"))
+nuORFs %>% select(Rep1) %>% table()
+
+#now asking if the ORFid is found in dataset 2
+nuORFs <- nuORFs %>% mutate(Rep2 = case_when(ORF_ID %in% ribocode_R2$ORF_ID ~ "Yes", .default = "No"))
+nuORFs %>% select(Rep2) %>% table()
+
+
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes") %>% nrow() #111 found in both.
+nuORFs %>% filter(Rep1 == "No" & Rep2 == "No") %>% nrow() #99 found in neither
+nuORFs %>% filter(Rep1 == "No" & Rep2 == "No" & protein == "Yes") %>% nrow() #57 of the nuORFs found in neither had protein support
+
+nuORFs %>% filter(Rep1 == "Yes" & protein == "Yes") %>% nrow() #93 Rep1 have protein support.
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "No" & protein == "Yes") %>% nrow() #44 Rep1 only have protein support.
+nuORFs %>% filter(Rep2 == "Yes" & protein == "Yes") %>% nrow() #73 Rep2 have protein support.
+nuORFs %>% filter(Rep2 == "Yes" & Rep1 == "No" & protein == "Yes") %>% nrow() #24 Rep2 only have protein support.
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes" & protein == "Yes") %>% nrow() #49 called by both programs have protein support
+nuORFs %>% filter(protein == "Yes") %>% nrow()
+
+
+
+
+#this creates the venn diagrams. Idk that it's needed
+set1 <- as.matrix(nuORFs %>% filter(Rep1 != "No"))[,7]
+set2 <- as.matrix(nuORFs %>% filter(Rep2 != "No"))[,8]
+set3 <- as.matrix(nuORFs)[,1]
+
+listALL_nu <- list(Rep1=set1, Rep2 = set2, Called = set3)
+
+ggVennDiagram(listALL_nu, edge_color = "black", label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+set4 <- as.matrix(annoORFs %>% filter(Rep1 != "No"))[,7]
+set5 <- as.matrix(annoORFs %>% filter(Rep2 != "No"))[,8]
+set6 <- as.matrix(annoORFs)[,1]
+
+listALL_anno <- list(Rep1=set4, Rep2 = set5, Called = set6)
+
+ggVennDiagram(listALL_anno, edge_color = "black", label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+#now I want to make a histogram. For each geneID, I need a column that says detected by 1 replicate, both replicates or no replicates. Then, I need the expression of the associated transcript. 
+
+#GetORFlist of Ribocode nuORFs and Anno ORFs - start fresh.
+annoORFs <- ORFlist %>% filter(ORF_type == "annotated" & program == "Ribocode")
+nuORFs <- ORFlist %>% filter(ORF_type != "annotated" & program == "Ribocode")
+
+#now asking if the ORFid is found in dataset 1
+annoORFs <- annoORFs %>% mutate(Rep1 = case_when(ORF_ID %in% ribocode_R1$ORF_ID ~ "Yes", .default = "No"))
+#now asking if the ORFid is found in dataset 2
+annoORFs <- annoORFs %>% mutate(Rep2 = case_when(ORF_ID %in% ribocode_R2$ORF_ID ~ "Yes", .default = "No"))
+#now creating column with final categories
+annoORFs <- annoORFs %>% mutate(categories = case_when(Rep1 == "Yes" & Rep2 == "Yes" ~ "Both", Rep1 == "Yes" & Rep2 == "No" ~ "1replicate", Rep1 == "No" & Rep2 == "Yes" ~ "1replicate", Rep1 == "No" & Rep2 == "No" ~ "NotDetected",  .default = "No"))
+
+#now asking if the ORFid is found in dataset 1
+nuORFs <- nuORFs %>% mutate(Rep1 = case_when(ORF_ID %in% ribocode_R1$ORF_ID ~ "Yes", .default = "No"))
+#now asking if the ORFid is found in dataset 2
+nuORFs <- nuORFs %>% mutate(Rep2 = case_when(ORF_ID %in% ribocode_R2$ORF_ID ~ "Yes", .default = "No"))
+#now creating column with final categories
+nuORFs <- nuORFs %>% mutate(categories = case_when(Rep1 == "Yes" & Rep2 == "Yes" ~ "Both", Rep1 == "Yes" & Rep2 == "No" ~ "1replicate", Rep1 == "No" & Rep2 == "Yes" ~ "1replicate", Rep1 == "No" & Rep2 == "No" ~ "NotDetected",  .default = "No"))
+
+#expression data
+expressionData <- readxl::read_excel(here("output", "TPM_TEdata.xlsx"))
+
+annoORFs <- left_join(annoORFs, expressionData)
+nuORFs <- left_join(nuORFs, expressionData)
+
+annoORFs$categories <- factor(annoORFs$categories, levels = c("Both", "1replicate", "NotDetected"))
+nuORFs$categories <- factor(nuORFs$categories, levels = c("Both", "1replicate", "NotDetected"))
+
+annoRC <- ggplot(annoORFs, aes(x=categories, y=log10(meanRNA))) + 
+  geom_violin() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + theme_minimal() + ggtitle("Annotated ORFs - Ribocode") + geom_hline(yintercept = 1.15)
+
+nuORFRC <- ggplot(nuORFs, aes(x=categories, y=log10(meanRNA))) + 
+  geom_violin() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + theme_minimal() + ggtitle("nuORFs ORFs - Ribocode") + geom_hline(yintercept = 0.95)
+
+```
+
+
+
+```{r}
+load(here("input", "RiboQC_output", "NM2022_0085_R2Aligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
+
+#pulling relevant information from Rdata file and making into dataframe.
+orfquant_minimal_R1 <- data.frame(
+id = ORFquant_results$ORFs_tx$ORF_id_tr,
+AA = ORFquant_results$ORFs_tx$Protein,
+annotation = ORFquant_results$ORFs_tx$ORF_category_Tx,
+gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_tx$transcript_id, transcriptType = ORFquant_results$ORFs_tx$transcript_biotype, annotationII = ORFquant_results$ORFs_tx$ORF_category_Tx)
+
+#ORFquant uses transcript ID but Ribocode uses geneID. I want to switch ORFquant to using geneID instead in order to combine. This creates a database that I will use later to do that. 
+ORFquant_IDswitch_R1 <- orfquant_minimal_R1 %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = FALSE) %>% tidyr::unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) %>% dplyr::select(id, ORF_ID)
+colnames(ORFquant_IDswitch_R1) <- c("ORF_ID_transcript", "ORF_ID_gene")
+
+orfquant_minimal_R1 <- left_join(orfquant_minimal_R1, ORFquant_IDswitch_R1, by = c("id" = "ORF_ID_transcript"))
+
+load(here("input", "RiboQC_output", "NM2022_0086_R2Aligned.sortedByCoord.out.bam_for_SaTAnn_final_ORFquant_results"))
+
+#pulling relevant information from Rdata file and making into dataframe.
+orfquant_minimal_R2 <- data.frame(
+id = ORFquant_results$ORFs_tx$ORF_id_tr,
+AA = ORFquant_results$ORFs_tx$Protein,
+annotation = ORFquant_results$ORFs_tx$ORF_category_Tx,
+gene = ORFquant_results$ORFs_tx$gene_id, transcript_id = ORFquant_results$ORFs_tx$transcript_id, transcriptType = ORFquant_results$ORFs_tx$transcript_biotype, annotationII = ORFquant_results$ORFs_tx$ORF_category_Tx)
+
+#ORFquant uses transcript ID but Ribocode uses geneID. I want to switch ORFquant to using geneID instead in order to combine. This creates a database that I will use later to do that. 
+ORFquant_IDswitch_R2 <- orfquant_minimal_R2 %>% separate(col = "id", into = c("transcript", "first", "second"), sep = "_", remove = FALSE) %>% tidyr::unite(col = "ORF_ID", c("gene", "first", "second"), sep = "_", remove = FALSE) %>% dplyr::select(id, ORF_ID)
+colnames(ORFquant_IDswitch_R2) <- c("ORF_ID_transcript", "ORF_ID_gene")
+
+
+orfquant_minimal_R2 <- left_join(orfquant_minimal_R2, ORFquant_IDswitch_R2, by = c("id" = "ORF_ID_transcript"))
+
+
+#GetORFlist of ORFquant nuORFs and Anno ORFs
+annoORFs <- ORFlist %>% filter(ORF_type == "annotated" & program == "ORFquant")
+nuORFs <- ORFlist %>% filter(ORF_type != "annotated" & program == "ORFquant")
+
+
+#now asking if the ORFid is found in dataset 1
+annoORFs <- annoORFs %>% mutate(Rep1 = case_when(ORF_ID %in% orfquant_minimal_R1$ORF_ID_gene ~ "Yes", .default = "No"))
+annoORFs %>% select(Rep1) %>% table()
+
+#now asking if the ORFid is found in dataset 2
+annoORFs <- annoORFs %>% mutate(Rep2 = case_when(ORF_ID %in% orfquant_minimal_R2$ORF_ID_gene ~ "Yes", .default = "No"))
+annoORFs %>% select(Rep2) %>% table()
+
+
+#getting some numbers
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes") %>% nrow() #6025 found in both.
+annoORFs %>% filter(Rep1 == "No" & Rep2 == "No") %>% nrow() #1298 found in neither
+annoORFs %>% filter(Rep1 == "No" & Rep2 == "No" & protein == "Yes") %>% nrow() #1089 found in neither but had protein support
+
+annoORFs %>% filter(Rep1 == "Yes" & protein == "Yes") %>% nrow() #8,305 Rep1 have protein support.
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "No" & protein == "Yes") %>% nrow() #2,774 Rep1 only have protein support.
+annoORFs %>% filter(Rep2 == "Yes" & protein == "Yes") %>% nrow() #7,114 Rep2 have protein support.
+annoORFs %>% filter(Rep2 == "Yes" & Rep1 == "No" & protein == "Yes") %>% nrow() #1,583 Rep2 only have protein support.
+annoORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes" & protein == "Yes") %>% nrow() #5,531 called by both programs have protein support
+annoORFs %>% filter(protein == "Yes") %>% nrow()
+
+
+#Now repeat these steps for the nuORFs. 
+#now asking if the ORFid is found in dataset 1
+nuORFs <- nuORFs %>% mutate(Rep1 = case_when(ORF_ID %in% orfquant_minimal_R1$ORF_ID_gene ~ "Yes", .default = "No"))
+nuORFs %>% select(Rep1) %>% table()
+
+#now asking if the ORFid is found in dataset 2
+nuORFs <- nuORFs %>% mutate(Rep2 = case_when(ORF_ID %in% orfquant_minimal_R2$ORF_ID_gene ~ "Yes", .default = "No"))
+nuORFs %>% select(Rep2) %>% table()
+
+
+#getting some numbers
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes") %>% nrow() #97 found in both.
+nuORFs %>% filter(Rep1 == "No" & Rep2 == "No") %>% nrow() #240 found in neither
+nuORFs %>% filter(Rep1 == "No" & Rep2 == "No" & protein == "Yes") %>% nrow() #149 of the nuORFs found in neither had protein support
+
+nuORFs %>% filter(Rep1 == "Yes" & protein == "Yes") %>% nrow() #194 Rep1 have protein support.
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "No" & protein == "Yes") %>% nrow() #134 Rep1 only have protein support.
+nuORFs %>% filter(Rep2 == "Yes" & protein == "Yes") %>% nrow() #143 Rep2 have protein support.
+nuORFs %>% filter(Rep2 == "Yes" & Rep1 == "No" & protein == "Yes") %>% nrow() #83 Rep2 only have protein support.
+nuORFs %>% filter(Rep1 == "Yes" & Rep2 == "Yes" & protein == "Yes") %>% nrow() #60 called by both programs have protein support
+nuORFs %>% filter(protein == "Yes") %>% nrow()
+
+
+
+
+set1 <- as.matrix(nuORFs %>% filter(Rep1 != "No"))[,7]
+set2 <- as.matrix(nuORFs %>% filter(Rep2 != "No"))[,8]
+set3 <- as.matrix(nuORFs)[,1]
+
+listALL_nu <- list(Rep1=set1, Rep2 = set2, Called = set3)
+
+ggVennDiagram(listALL_nu, edge_color = "black", label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+set4 <- as.matrix(annoORFs %>% filter(Rep1 != "No"))[,7]
+set5 <- as.matrix(annoORFs %>% filter(Rep2 != "No"))[,8]
+set6 <- as.matrix(annoORFs)[,1]
+
+listALL_anno <- list(Rep1=set4, Rep2 = set5, Called = set6)
+
+ggVennDiagram(listALL_anno, edge_color = "black", label = "count", label_alpha = 0) + theme(legend.position = "none")
+
+
+#GetORFlist of Ribocode nuORFs and Anno ORFs - start fresh.
+annoORFs <- ORFlist %>% filter(ORF_type == "annotated" & program == "ORFquant")
+nuORFs <- ORFlist %>% filter(ORF_type != "annotated" & program == "ORFquant")
+
+#now asking if the ORFid is found in dataset 1
+annoORFs <- annoORFs %>% mutate(Rep1 = case_when(ORF_ID %in% orfquant_minimal_R1$ORF_ID_gene ~ "Yes", .default = "No"))
+#now asking if the ORFid is found in dataset 2
+annoORFs <- annoORFs %>% mutate(Rep2 = case_when(ORF_ID %in% orfquant_minimal_R2$ORF_ID_gene ~ "Yes", .default = "No"))
+#now creating column with final categories
+annoORFs <- annoORFs %>% mutate(categories = case_when(Rep1 == "Yes" & Rep2 == "Yes" ~ "Both", Rep1 == "Yes" & Rep2 == "No" ~ "1replicate", Rep1 == "No" & Rep2 == "Yes" ~ "1replicate", Rep1 == "No" & Rep2 == "No" ~ "NotDetected",  .default = "No"))
+
+#now asking if the ORFid is found in dataset 1
+nuORFs <- nuORFs %>% mutate(Rep1 = case_when(ORF_ID %in% orfquant_minimal_R1$ORF_ID_gene ~ "Yes", .default = "No"))
+#now asking if the ORFid is found in dataset 2
+nuORFs <- nuORFs %>% mutate(Rep2 = case_when(ORF_ID %in% orfquant_minimal_R2$ORF_ID_gene ~ "Yes", .default = "No"))
+#now creating column with final categories
+nuORFs <- nuORFs %>% mutate(categories = case_when(Rep1 == "Yes" & Rep2 == "Yes" ~ "Both", Rep1 == "Yes" & Rep2 == "No" ~ "1replicate", Rep1 == "No" & Rep2 == "Yes" ~ "1replicate", Rep1 == "No" & Rep2 == "No" ~ "NotDetected",  .default = "No"))
+
+annoORFs <- left_join(annoORFs, expressionData)
+nuORFs <- left_join(nuORFs, expressionData)
+
+annoORFs$categories <- factor(annoORFs$categories, levels = c("Both", "1replicate", "NotDetected"))
+nuORFs$categories <- factor(nuORFs$categories, levels = c("Both", "1replicate", "NotDetected"))
+
+annoOQ <- ggplot(annoORFs, aes(x=categories, y=log10(meanRNA))) + 
+  geom_violin() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + theme_minimal() + ggtitle("Annotated ORFs - ORFquant") + geom_hline(yintercept = 1.155)
+
+nuORFOQ <- ggplot(nuORFs, aes(x=categories, y=log10(meanRNA))) + 
+  geom_violin() + stat_summary(fun.y=mean, geom="point", shape=23, size=2) + theme_minimal() + ggtitle("nuORFs ORFs - ORFquant") + geom_hline(yintercept = 1.27)
+
+
+library(ggplot2)
+
+# Create a list of ggplot objects
+plots <- list(annoRC, annoOQ, nuORFRC, nuORFOQ)
+
+# Open a PDF device
+pdf(here("plots", "replicatesRNAexpression.pdf"), width = 6, height = 4)
+
+# Print each plot to the PDF
+for (plot in plots) {
+  print(plot)
+}
+
+# Close the PDF device
+dev.off()
+
+
+```
+

@@ -23,13 +23,15 @@ output: html_document
 hiconfidence <- read_xlsx(here("accessories", "Mudge_etal_ORFdatabase.xlsx"), sheet = 3)
 loconfidence <- read_xlsx(here("accessories", "Mudge_etal_ORFdatabase.xlsx"), sheet = 4)
 
-AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics.xlsx"))
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+AllORFs_NP <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
 
 geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
 colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
 
 tx2gene <- geneInfo[,c(2,1)]
 
+AllORFs %>% filter(program == "Ribocode" & ORF_type == "annotated") %>% nrow()
 ```
 
 
@@ -55,16 +57,23 @@ p_nuORFoverlap
 
 ```
 
+
+
 ```{r warning=FALSE, message=FALSE}
+#this file is from a BLASTP alignment of the 7,264 ORFs from Mudge et al database.
 nuORFaligned <- read_table(here("accessories", "nuORFalign.txt"), col_names = FALSE)
 
 colnames(nuORFaligned) <- c("queryID", "targetID", "identical_matches", "alignment_length", "mismatches", "gap_openings", "query_start", "query_end", "target_start", "target_end", "evalue", "bitscore")
 
+#choose the best match for each ORF_ID
 nuORFaligned_high <- nuORFaligned %>% group_by(queryID) %>% filter(identical_matches == max(identical_matches))
 
+#brief peek to see what we have here for percentages matching
 hist(nuORFaligned_high$identical_matches, breaks = 50)
 
+#setting a confidence filter
 nuORFaligned_high <- nuORFaligned_high %>% filter(identical_matches > 89.999)
+
 
 orfDatabase <- rbind(hiconfidence, loconfidence)
 
@@ -74,18 +83,21 @@ nuORFaligned_all %>% filter(Riboseq_evidence == 1 & Gaertner_et_al_2020 == 1) %>
 
 AllORFs <- AllORFs %>% dplyr::mutate(nuORFdatabase = case_when(ORF_ID %in% nuORFaligned_all$queryID ~ 'Yes', !(ORF_ID %in% nuORFaligned_all$queryID) ~ 'No'))
 
+AllORFs_NP <- AllORFs_NP %>% dplyr::mutate(nuORFdatabase = case_when(ORF_ID %in% nuORFaligned_all$queryID ~ 'Yes', !(ORF_ID %in% nuORFaligned_all$queryID) ~ 'No'))
+
+#trying to determine if the ORF is coming from a dataset that was looking at pancreatic nuORFs. 
 nuORFaligned_sub <- nuORFaligned_all[,c(1,26,33)] %>% unique()
 
 nuORFaligned_sub$sum <- nuORFaligned_sub$Riboseq_evidence + nuORFaligned_sub$Gaertner_et_al_2020
 nuORFaligned_sub <- nuORFaligned_sub %>% group_by(queryID) %>% filter(sum == max(sum)) %>% select(-sum)
 
 AllORFs <- left_join(AllORFs, nuORFaligned_sub, by = c("ORF_ID" = "queryID"))
+AllORFs_NP <- left_join(AllORFs_NP, nuORFaligned_sub, by = c("ORF_ID" = "queryID"))
+
 
 names(AllORFs)[names(AllORFs) == 'Gaertner_et_al_2020'] <- 'PancreaticProgenitor'
+names(AllORFs_NP)[names(AllORFs_NP) == 'Gaertner_et_al_2020'] <- 'PancreaticProgenitor'
 
-geneInfo2 <- geneInfo[,c(1,4)] %>% unique()
-
-AllORFs <- left_join(AllORFs, geneInfo2)
 
 AllORFs %>% filter(ORF_type!= "annotated") %>% select(nuORFdatabase) %>% table()
 
@@ -103,7 +115,11 @@ colors <- c("#009E73", "#56B4E9", "#E69F00", "#CC79A7")
 
 nuORF_specific <- ggplot(data=nuORFs_barplot %>% filter(ORF_type != "other"), aes(x=ORF_type, y=percent, fill=ORF_type)) + geom_bar(stat="identity") + theme_minimal() + ylab("% ORF Beta-cell Specific") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_fill_manual(values = colors)
 
-#ggsave(plot = nuORF_specific, filename = here("plots", "nuORFs_Betaspecific.pdf"), width = 4, height = 3)
+#ggsave(plot = nuORF_specific, filename = here("plots", "Fig4I_nuORFs_Betaspecific.pdf"), width = 4, height = 3)
+
+#writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+#writexl::write_xlsx(AllORFs_NP, here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
+
 ```
 
 
@@ -189,24 +205,6 @@ plotGSEAexplore2
 ```
 
 
-```{r warning=FALSE, message=FALSE}
 
-TYKvars <- read_csv(here("accessories", "kp_variant_TYK_regions.csv"))
-
-TYKvars$TYK <- "TYK2"
-
-colnames(TYKvars)
-
-ggviolin(TYKvars, y="Beta__T1D", x="TYK", trim = F, add=c("mean"))+ theme_minimal() + ylab("log10(Odds Ratio)") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-
-TYK_regions4 <- read_tsv(here("accessories", "TYK_regions4.tsv"), col_names = FALSE)
-TYK_regions4 <- TYK_regions4 %>% arrange(desc(X2))
-
-TYK_regions4 %>%
- ggplot( aes(x=X2, y=X3)) +
-    geom_point() + theme_minimal() + ylab("Log10(Odds Ratio)") + xlab("Position - 5'-> 3'")
-
-
-```
 
 

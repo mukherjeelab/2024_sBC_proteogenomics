@@ -36,7 +36,8 @@ library(stringr)
 
 
 ```{r load data, message=FALSE, warning=FALSE, echo=FALSE}
-AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered.xlsx"))
+AllORFs <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+AllORFs_NP <- read_xlsx(here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
 
 geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
 colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
@@ -47,7 +48,7 @@ tx2gene <- geneInfo[,c(2,1)]
 
 
 ```{r message=FALSE, warning=FALSE}
-Top20TE <- read_csv(here("NAseqs", "Top20TE_NAseqs.csv"))
+Top20TE <- read_csv(here("output", "Top20TE_NAseqs.csv"))
 
 #ORF_ID, AA_seq, ORF_type, gene_id, program, protein - AllORFs
 #column 4, 9, "Top20TE", 3, "None", "Yes"
@@ -63,7 +64,7 @@ Top20TE <- Top20TE %>% select("ORF_ID", "AAseq", "ORF_type", "gene_id", "program
 
 colnames(Top20TE)
 colnames(AllORFs)
-AllORFs <- rbind(AllORFs[,1:6], Top20TE)
+AllORFs_TE <- rbind(AllORFs[,1:6], Top20TE)
 
 ```
 
@@ -134,7 +135,7 @@ sum_values_in_Opticolumns <- function(data_frame, columns) {
 
 #Get the Nucleotide sequence of their ORFs. 
 
-TEdata <- read_csv(here("NAseqs", "Top20TE_NAseqs.csv"))
+TEdata <- read_csv(here("output", "Top20TE_NAseqs.csv"))
 
 #Use the function above to calculate the sum of all the codons. 
 output_list_Top20 <- lapply(TEdata$extracted_sequence, codon_count_table)
@@ -207,7 +208,7 @@ colnames(outputTE) <- c("ORF_ID", "FOP_score", "ORF_type", "program")
 
 ```{r}
 
-RCdata <- read_csv(here("NAseqs", "Ribocode_NAseqs.csv"))
+RCdata <- read_csv(here("output", "Ribocode_NAseqs.csv"))
 
 RC_uORF <- RCdata %>% filter(ORF_type == "uORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
 RC_dORF <- RCdata %>% filter(ORF_type == "dORF") %>% dplyr::select(ORF_ID, extracted_sequence) %>% unique()
@@ -281,7 +282,7 @@ FOPtable <- rbind(outputTE, output_df_uORF_RC[,c(66,69:71)], output_df_dORF_RC[,
 
 
 ```{r}
-OQdata <- read_csv(here("NAseqs", "ORFquant_NAseqs.csv"))
+OQdata <- read_csv(here("output", "ORFquant_NAseqs.csv"))
 
 OQdata <- left_join(OQdata, AllORFs)
 
@@ -374,7 +375,14 @@ FOPtable$ORF_type <- factor(FOPtable$ORF_type, order = TRUE, levels =c("Top20TE"
 
 levels(FOPtable$ORF_type)
 
+FOP2 <- FOPtable[,1:2] %>% unique() %>%
+  distinct(ORF_ID, .keep_all = TRUE)
+
+AllORFs <- left_join(AllORFs, FOP2, by = c("ORF_ID"))
+AllORFs_NP <- left_join(AllORFs_NP, FOP2, by = c("ORF_ID"))
+
 FOPtable <- left_join(FOPtable, AllORFs, by = c("ORF_ID"))
+
 
 FOPtable <- FOPtable %>% select(ORF_ID, FOP_score, ORF_type.x, program.x, AAseq) %>% unique()
 
@@ -385,7 +393,7 @@ p_FOPscore <- ggviolin(data = FOPtable %>% filter(ORF_type.x != "other"), x = "O
 
 p_FOPscore
 
-ggsave(plot = p_FOPscore, filename = here("plots", "FOPscore.pdf"), width = 6, height = 4)
+#ggsave(plot = p_FOPscore, filename = here("plots", "SuppFig4D_FOPscore.pdf"), width = 6, height = 4)
 
 
 FOPtable %>% filter(ORF_type.x == "annotated") %>% pull(FOP_score) %>% mean()
@@ -425,6 +433,12 @@ pairwise.wilcox.test(data2$FOP_score, data2$program.x,
 data2 <- FOPtable %>% filter(ORF_type.x == "dORF")
 pairwise.wilcox.test(data2$FOP_score, data2$program.x,
                  p.adjust.method = "BH")
+
+
+
+
+writexl::write_xlsx(AllORFs, here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+writexl::write_xlsx(AllORFs_NP, here("output", "AllORFs_wProteomics_filtered_ProgramCollapsed_plus.xlsx"))
 
 
 ```

@@ -1,0 +1,99 @@
+---
+title: "Immunopeptidomics"
+author: "Kathryn Walters"
+date: "2024-10-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggVennDiagram)
+library(ggthemes)
+library(ggplot2)
+library(readr)
+```
+
+
+
+```{r data loading,  message=FALSE, warning=FALSE}
+
+data <- readxl::read_excel(here("accessories", "20240919_HG_reanalysis_II.xlsx"))
+
+
+histoLengths <- ggplot(data, aes(x = `peptide length`)) +
+  geom_histogram(binwidth = 1, fill = "grey", color = "black", alpha = 0.7) +
+  labs(
+    title = "Histogram of Peptide Lengths",
+    x = "Peptide Length",
+    y = "Frequency"
+  ) + xlim(0,20) +
+  theme_minimal()
+
+#ggsave(plot = histoLengths, filename = here("plots", "Fig6_immunoHistLengths.pdf"), width = 4, height = 3)
+
+# Split the protein names by semi-colon
+split_proteins <- strsplit(data$`Protein Name`, ";")
+
+# Unlist the split proteins to create a single vector. These are all the IDs that have immunopeptidomic data. 
+protein_list <- unlist(split_proteins)
+
+
+data2 <- data[c(24:27,29,1)]
+
+
+
+#So to get the IDs that are just from my databases and not from the canonical database, I need only the rows where 'Normal Annotation' is 0. 
+data_nu <- data2 %>% filter(`Annotations normal` == 0)
+
+#This left 97 rows. Now let me make my protein list from this. 
+split_proteins_nu <- strsplit(data_nu$`Protein Name`, ";")
+
+# Unlist the split proteins to create a single vector. These are all the IDs that have immunopeptidomic data. 
+protein_list_nu <- unlist(split_proteins_nu) %>% unique() #122 unique hits!
+
+#bring in my ORFlist
+ORFlist <- readxl::read_excel(here("output", "AllORFs_wProteomics_filtered_plus.xlsx"))
+
+#how many of these are found presented? 
+ORFlist <- ORFlist %>% mutate(HLA_presented_hi = case_when(ORF_ID %in% protein_list_nu ~ "Yes", .default = "No"))
+
+ORFlist <- ORFlist %>% mutate(HLA_presented_lo = case_when(ORF_ID %in% protein_list ~ "Yes", .default = "No"))
+
+ORFlist %>% filter(HLA_presented_lo == "Yes") %>% dplyr::select(ORF_type) %>% table()
+ORFlist %>% filter(HLA_presented_hi == "Yes") %>% dplyr::select(ORF_type) %>% table()
+
+
+ORFlist %>% filter(HLA_presented_hi == "Yes" & ORF_type != "annotated")
+
+
+geneInfo <- read_csv(here::here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F, show_col_types = FALSE) 
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+ORFlist <- left_join(ORFlist, annotation)
+
+HLA_presentedLo <- ORFlist %>% filter(HLA_presented_lo == "Yes" & ORF_type != "annotated")
+
+ORFlist %>% filter(HLA_presented_lo == "Yes" & ORF_type != "annotated") #616
+ORFlist %>% filter(protein == "Yes" & ORF_type != "annotated" & HLA_presented_lo == "Yes") #198
+ORFlist %>% filter(protein == "Yes" & ORF_type != "annotated" & HLA_presented_hi == "Yes") #30
+
+#write_csv(as.data.frame(HLA_presentedLo), here("output", "HLA_presented_nuORF_lo.csv"))
+  
+
+ORFlistsummary <- ORFlist %>% filter(HLA_presented_lo == "Yes" & ORF_type != "annotated") %>% dplyr::select(ORF_type) %>% table() %>% as.data.frame()
+
+ORFlistsummary_hi <- ORFlist %>% filter(HLA_presented_lo == "Yes" & ORF_type != "annotated") %>% dplyr::select(ORF_type) %>% table() %>% as.data.frame()
+
+ggplot(ORFlistsummary, aes(fill=ORF_type, y=Freq, x=ORF_type)) + 
+    geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_colorblind() + ylab("Percent") + xlab("") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+

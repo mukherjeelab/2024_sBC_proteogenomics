@@ -1,0 +1,1495 @@
+---
+title: "2-BetaCellBiology"
+author: "Kathryn Walters"
+date: "2024-12-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+``` {r setup, echo=FALSE, warning = FALSE, include = F}
+library(here)
+library(tximport)
+library(tidyverse)
+library(viridis)
+library(pheatmap)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(ggrepel)
+library(ggpubr)
+library(scales)
+library(limma)
+library(DESeq2)
+library(plotly)
+library(DT)
+library(apeglm)
+library(dplyr)
+library(cowplot)
+library(ggVennDiagram)
+library(EnhancedVolcano)
+# you will need to install all these packages before you can run this.
+```
+
+
+
+```{r metadata, echo=FALSE, warning = FALSE, include = F}
+metadata <- readxl::read_xlsx(here("accessories","NMLabLibrarySummary.xlsx"), skip = 1) %>%
+  filter(Project == "Holger" & Index_1_i7!="PooledLibraries")
+
+
+
+metadata <- data.frame(
+  sample=metadata$SampleID,
+  exp=factor(case_when(metadata$Treatment1 == "Riboseq" ~ "rp",
+                      metadata$Treatment1 == "IPRiboSeq" ~ "ip",
+                      T ~ "input")),
+  type=factor(case_when(metadata$LibraryPrepKit=="Qiagen_miRNA" ~ "ribo",
+          T ~ "rna")),
+  time=factor(metadata$Time_hr),
+  rep=factor(case_when(metadata$Treatment2 == "Rep1" ~ "A",
+                       T ~ "B")
+             )
+) %>% na.omit()
+
+
+metadata$sample <- case_when(metadata$type=="ribo" ~ paste(metadata$sample,"_R2",sep = ""),
+          T ~ metadata$sample)
+
+keepSamples <- c("NM2022_0001_R2", "NM2022_0002_R2", "NM2022_0003_R2", "NM2022_0004_R2", "NM2022_0005_R2", "NM2022_0006_R2", "NM2022_0007_R2", "NM2022_0008_R2", "NM2022_0041", "NM2022_0042", "NM2022_0043", "NM2022_0044", "NM2022_0085_R2", "NM2022_0086_R2", "NM2022_0088", "NM2022_0090")
+metadata <- metadata %>% filter(sample %in% keepSamples)
+
+```
+
+
+
+```{r get expression, echo=FALSE, warning = FALSE, include = FALSE}
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F) %>%   filter(!str_detect(X2, "pre_"))
+
+
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+annotation <- geneInfo %>% 
+  dplyr::select(gene_id, symbol, biotype) %>% # exclude transcripts
+  unique() %>% # remove duplicates
+  as.data.frame() # convert into dataframe
+
+# create transcript-to-gene mapping
+tx2gene <- geneInfo[,c(2,1)]
+
+gene_symbol <- geneInfo %>% pull(gene_id, symbol) %>% unique()
+
+myquantfiles <- paste("data/",
+                      metadata$sample,
+                      "/quant.sf",
+                      sep = "")
+  
+names(myquantfiles) <- paste(metadata$exp, metadata$type, metadata$time, metadata$rep, sep = "_")
+
+myTxi <- tximport(myquantfiles, type = "salmon", tx2gene = tx2gene)
+
+dataCounts <- as.data.frame(myTxi$counts) %>% rownames_to_column("gene_id")
+#write_csv(dataCounts, here("output", "Riboseq_AllCounts.csv"))
+
+# Look at distribution of sum of counts
+# to determine threshold for calling gene expressed
+
+#hist(log2(rowSums(myTxi$counts[,4:9])), breaks = 30) + abline(v=8)
+
+keepGenes <- rownames(myTxi$abundance[log2(rowSums(myTxi$counts[,4:9])) > 9,])
+
+# dataCounts <- as.data.frame(myTxi$abundance) %>% rownames_to_column()
+# write_csv(dataCounts, here("output", "Allcounts.csv"))
+# write_csv(gene_symbol, here("output", "geneSymbols.csv"))
+
+nonpolyA <- readxl::read_xlsx(path = here("accessories","polyAminus.xlsx"), sheet = 1) %>% 
+  pull(Gene)
+```
+
+
+
+
+
+## Translational regulation - DE v beta cells
+
+
+```{r dte, echo=FALSE, warning = FALSE, message=FALSE, eval=TRUE}
+# from https://currentprotocols.onlinelibrary.wiley.com/doi/full/10.1002/cpmb.108
+
+
+allCounts <- round(myTxi$counts[keepGenes,],0) #rounding the counts to the nearest whole number
+
+allCounts <- allCounts %>% as.data.frame() %>% rownames_to_column()
+
+allCounts <- allCounts[,c(1,16,17,2,3,8,9,4,5)]
+colnames(allCounts) <- c("rowname","ribo_36_A", "ribo_36_B", "ribo_700_A", "ribo_700_B", "rna_36_A", "rna_36_B", "rna_700_A", "rna_700_B")
+metadata$time <- relevel(factor(metadata$time), ref = "36") #factoring based on time
+
+allCounts1 <- allCounts
+
+allCounts1 <- allCounts1 %>% column_to_rownames("rowname")
+#separating counts for each experiment type (RNA,Ribo,IP)
+rna_counts <- as.matrix(allCounts1[,grep(pattern = "rna",colnames(allCounts1))]) 
+
+ip_ribo_counts <- as.matrix(allCounts1[,grep(pattern = "ribo",colnames(allCounts1))])
+
+
+### Now same of IP ribo-seq
+ip_sample_info <- metadata %>% dplyr::select(-sample) %>% filter(exp!="rp") %>% dplyr::select(-exp)
+ip_sample_info <- ip_sample_info[c(11,12,1,2,7,8,3,4),]
+ip_all <- cbind.data.frame(ip_ribo_counts,rna_counts)
+
+ip_sample_info$time <- relevel(ip_sample_info$time, ref = "36")
+
+ip_sample_info$type <- relevel(ip_sample_info$type, ref = "rna")
+
+#Running DeSeq which will give TE results since takes into account time & type
+ip_ddsMat <- DESeqDataSetFromMatrix(countData = ip_all, colData = ip_sample_info, design = ~time+type+time:type)
+ip_ddsMat <- DESeq(ip_ddsMat)
+ip_res_te <- results(ip_ddsMat, name=resultsNames(ip_ddsMat)[4])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+ip_res_te <- lfcShrink(dds = ip_ddsMat, res = ip_res_te, coef = resultsNames(ip_ddsMat)[4]) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene_id")
+
+ip_res_te <- inner_join(annotation, ip_res_te) %>% filter(!symbol %in% nonpolyA) 
+
+ip_te <- ip_res_te[which(ip_res_te$padj<0.05 & (ip_res_te$log2FoldChange > 1 | ip_res_te$log2FoldChange < -1)), ] %>%
+  as.data.frame %>%
+  mutate(te=case_when(log2FoldChange > 0 ~ "higher te",
+                      T ~ "lower te")) 
+
+ip_te %>%
+  pull(te) %>%
+  table()
+
+ip_res_te <- left_join(ip_res_te, annotation) %>% filter(biotype == "protein_coding")
+ip_res_te <- ip_res_te %>% na.omit()
+ip_res_beta <- ip_res_te
+
+beta_TE <- ip_res_te %>%
+  as.data.frame() %>%
+  mutate(TE = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "TE up",
+    padj < 0.05 & log2FoldChange < -1 ~ "TE down",
+    TRUE ~ "unchanged"
+  ))
+
+#number pvalue and lfc = 2,444 ... pvalue and lfc > 1 or lfc < -1
+#only pvalue = 712
+#only lfc = 323
+#NS = 9905
+
+pvalueNlfc <-ip_res_te[which(ip_res_te$padj<0.05 & (ip_res_te$log2FoldChange > 1 |  ip_res_te$log2FoldChange < -1)), ] %>% as.data.frame
+
+#I need this to be where lfc is between 1 and -1
+pvalueOnly <- ip_res_te[which(ip_res_te$padj < 0.05 & ip_res_te$log2FoldChange >= -1 & ip_res_te$log2FoldChange <= 1), ] %>% as.data.frame()
+
+  
+lfcOnly <- ip_res_te[which(ip_res_te$padj>0.05 & (ip_res_te$log2FoldChange > 1 |  ip_res_te$log2FoldChange < -1)), ] %>% as.data.frame
+  
+NSvalue <- ip_res_te[which(ip_res_te$padj > 0.05 & ip_res_te$log2FoldChange >= -1 & ip_res_te$log2FoldChange <= 1), ] %>% as.data.frame()
+
+
+
+p_DEvBcell_TE_volcano <- EnhancedVolcano::EnhancedVolcano(toptable = ip_res_te,
+                x = "log2FoldChange",
+                y = "padj",
+                lab = ip_res_te$symbol,
+                pCutoff = 0.05,
+                xlim = c(-5,5), ylim = c(0,55),
+                title = "DE v Beta cell",
+                subtitle = "",
+                legendPosition = "right",
+                col = c('black', 'grey', 'blue', 'red3'),
+                legendLabels=c('NS','Log2FC','p-value',
+      'p-value & Log2FC'))
+
+p_DEvBcell_TE_volcano
+
+#ggsave(filename = here("plots","Fig3_DEvBetacells_deltaTE_volcano.pdf"), plot = p_DEvBcell_TE_volcano, width = 10, height = 7)
+
+```
+
+## Translational regulation - DE v hPSC cells
+
+
+```{r dte, echo=FALSE, warning = FALSE, message=FALSE, eval=TRUE}
+# from https://currentprotocols.onlinelibrary.wiley.com/doi/full/10.1002/cpmb.108
+
+
+allCounts <- round(myTxi$counts[keepGenes,],0) #rounding the counts to the nearest whole number
+
+allCounts <- allCounts %>% as.data.frame() %>% rownames_to_column()
+
+allCounts <- allCounts[,c(1,6:9,14:17)]
+colnames(allCounts) <- c("rowname","rna_0_A", "rna_0_B", "rna_36_A", "rna_36_B","ribo_0_A", "ribo_0_B", "ribo_36_A", "ribo_36_B")
+metadata$time <- relevel(factor(metadata$time), ref = "0") #factoring based on time
+
+allCounts1 <- allCounts
+
+allCounts1 <- allCounts1 %>% column_to_rownames("rowname")
+#separating counts for each experiment type (RNA,Ribo,IP)
+rna_counts <- as.matrix(allCounts1[,grep(pattern = "rna",colnames(allCounts1))]) 
+
+ip_ribo_counts <- as.matrix(allCounts1[,grep(pattern = "ribo",colnames(allCounts1))])
+
+
+### Now same of IP ribo-seq
+ip_sample_info_0 <- metadata %>% dplyr::select(-sample) %>% filter(exp!="rp") %>% dplyr::select(-exp)
+ip_sample_info_0 <- ip_sample_info_0[c(5:12),]
+ip_all_0 <- cbind.data.frame(rna_counts,ip_ribo_counts)
+
+ip_sample_info_0$time <- relevel(ip_sample_info_0$time, ref = "0")
+
+ip_sample_info_0$type <- relevel(ip_sample_info_0$type, ref = "rna")
+
+#Running DeSeq which will give TE results since takes into account time & type
+ip_ddsMat_0 <- DESeqDataSetFromMatrix(countData = ip_all_0, colData = ip_sample_info_0, design = ~time+type+time:type)
+ip_ddsMat_0 <- DESeq(ip_ddsMat_0)
+ip_res_te_0 <- results(ip_ddsMat_0, name=resultsNames(ip_ddsMat_0)[4])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+ip_res_te_0 <- lfcShrink(dds = ip_ddsMat_0, res = ip_res_te_0, coef = resultsNames(ip_ddsMat_0)[4]) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "gene_id")
+
+
+ip_res_te_0 <- inner_join(annotation, ip_res_te_0) %>% filter(!symbol %in% nonpolyA) 
+ip_res_te_0 <- ip_res_te_0 %>% filter(biotype == "protein_coding")
+
+ip_te_0 <- ip_res_te_0[which(ip_res_te_0$padj<0.05 & (ip_res_te_0$log2FoldChange > 1 | ip_res_te_0$log2FoldChange < -1)), ] %>%
+  as.data.frame %>%
+  mutate(te=case_when(log2FoldChange > 0 ~ "higher te",
+                      T ~ "lower te")) 
+
+ip_te_0 %>%
+  pull(te) %>%
+  table()
+
+ip_res_hPSC <- ip_res_te_0
+
+hPSC_TE <- ip_res_te_0 %>%
+  as.data.frame() %>%
+  mutate(TE = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "TE up",
+    padj < 0.05 & log2FoldChange < -1 ~ "TE down",
+    TRUE ~ "unchanged"
+  ))
+
+
+
+
+
+#number pvalue and lfc = 188 ... pvalue and lfc > 1 or lfc < -1
+#only pvalue = 470
+#only lfc = 34
+#NS = 12433
+
+pvalueNlfc_0 <-ip_res_te_0[which(ip_res_te_0$padj<0.05 & (ip_res_te_0$log2FoldChange > 1 |  ip_res_te_0$log2FoldChange < -1)), ] %>% as.data.frame
+
+#I need this to be where lfc is between 1 and -1
+pvalueOnly_0 <- ip_res_te_0[which(ip_res_te_0$padj < 0.05 & ip_res_te_0$log2FoldChange >= -1 & ip_res_te_0$log2FoldChange <= 1), ] %>% as.data.frame()
+
+  
+lfcOnly_0 <- ip_res_te_0[which(ip_res_te_0$padj>0.05 & (ip_res_te_0$log2FoldChange > 1 |  ip_res_te_0$log2FoldChange < -1)), ] %>% as.data.frame
+  
+NSvalue_0 <- ip_res_te_0[which(ip_res_te_0$padj > 0.05 & ip_res_te_0$log2FoldChange >= -1 & ip_res_te_0$log2FoldChange <= 1), ] %>% as.data.frame()
+
+
+
+
+p_hPSCvDEcell_TE_volcano <- EnhancedVolcano::EnhancedVolcano(toptable = ip_res_te_0,
+                x = "log2FoldChange",
+                y = "padj",
+                lab = ip_res_te_01$symbol,
+                pCutoff = 0.05,
+                xlim = c(-5,5), ylim = c(0,55),
+                title = "hPSC v DE cell",
+                subtitle = "",
+                legendPosition = "right",
+                col = c('black', 'grey', 'blue', 'red3'),
+                legendLabels=c('NS','Log2FC','p-value',
+      'p-value & Log2FC'))
+
+p_hPSCvDEcell_TE_volcano
+
+#ggsave(filename = here("plots","Fig3_hPSCvDEcells_deltaTE_volcano.pdf"), plot = p_hPSCvDEcell_TE_volcano, width = 10, height = 7)
+
+```
+
+
+
+## GSEA of TE differences 
+
+```{r prep GSEA analysis}
+
+m_df_c2 <- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:REACTOME") %>% dplyr::select(gs_name, gene_symbol)
+
+
+geneInfo <- read_csv(here("accessories","gencode.v26.primary.info.csv.zip"), col_names = F) %>%
+  filter(!str_detect(X2, "pre_"))
+
+colnames(geneInfo) <- c("gene_id","transcript_id","biotype","symbol")
+
+gene_type <- geneInfo %>% dplyr::select(biotype, gene_id)
+gene_type <- unique(gene_type)
+
+#hPSC v DE cells
+gsea_data <- ip_res_te_0
+gsea_data <- inner_join(annotation, gsea_data)
+gsea_data <- gsea_data %>% filter(., biotype == "protein_coding") %>% na.omit()
+
+geneList_te <- gsea_data %>% pull(log2FoldChange)
+names(geneList_te) <- gsea_data$symbol
+
+geneList_te <- sort(geneList_te, decreasing = TRUE)
+geneList_te <- geneList_te[!duplicated(names(geneList_te))]
+
+
+hscvsde_te_c2 <- GSEA(geneList = geneList_te,
+                         eps = 0,
+                         pAdjustMethod = "fdr",
+                         pvalueCutoff = .05,
+                         minGSSize = 20,
+                         maxGSSize = 1000,
+                         TERM2GENE = m_df_c2)
+
+
+GSEAall1 <- hscvsde_te_c2@result
+
+
+#writexl::write_xlsx(x = GSEAall1, path = here("output","GSEAall_hPSCvDEcells.xlsx"), col_names = T)
+
+
+
+#DE v beta cells
+gsea_data <- ip_res_beta
+gsea_data <- inner_join(annotation, gsea_data)
+gsea_data <- gsea_data %>% filter(., biotype == "protein_coding") %>% na.omit()
+
+geneList_te <- gsea_data %>% pull(log2FoldChange)
+names(geneList_te) <- gsea_data$symbol
+
+geneList_te <- sort(geneList_te, decreasing = TRUE)
+geneList_te <- geneList_te[!duplicated(names(geneList_te))]
+
+
+hscvsde_te_c2 <- GSEA(geneList = geneList_te,
+                         eps = 0,
+                         pAdjustMethod = "fdr",
+                         pvalueCutoff = .05,
+                         minGSSize = 20,
+                         maxGSSize = 1000,
+                         TERM2GENE = m_df_c2)
+
+
+GSEAall2 <- hscvsde_te_c2@result
+
+
+# Extract the data for a specific gene set
+
+es_data <- hscvsde_te_c2@result[hscvsde_te_c2@result$ID == "REACTOME_ANTIGEN_PRESENTATION_FOLDING_ASSEMBLY_AND_PEPTIDE_LOADING_OF_CLASS_I_MHC", ]
+
+
+ECMplot <- gseaplot(hscvsde_te_c2, geneSetID = 1, by = "runningScore", title = hscvsde_te_c2$Description[1], color.line = "purple4", pvalue_table = TRUE)
+ECMplot
+ggsave(plot = ECMplot, filename = here("plots", "Fig3_DEvBcells_ECMplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+pepLigandplot <- gseaplot(hscvsde_te_c2, geneSetID = 46, by = "runningScore", title = hscvsde_te_c2$Description[46], color.line = "purple4", pvalue_table = TRUE)
+pepLigandplot
+ggsave(plot = pepLigandplot, filename = here("plots", "Fig3_DEvBcells_pepLigandplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+antigenplot <- gseaplot(hscvsde_te_c2, geneSetID = 79, by = "runningScore", title = hscvsde_te_c2$Description[79], color.line = "purple4", pvalue_table = TRUE)
+antigenplot
+ggsave(plot = antigenplot, filename = here("plots", "Fig3_DEvBcells_antigenplot.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+betaCellDev <- gseaplot(hscvsde_te_c2, geneSetID = 114, by = "runningScore", title = hscvsde_te_c2$Description[114], color.line = "purple4", pvalue_table = TRUE)
+betaCellDev
+ggsave(plot = betaCellDev, filename = here("plots", "Fig3_DEvBcells_betaCellDev.pdf"), device = "pdf", units = "in", width = 6, height = 4, dpi = 320)
+
+
+#writexl::write_xlsx(x = GSEAall2, path = here("output","GSEAall_DEvBetacells.xlsx"), col_names = T)
+
+
+```
+
+
+```{r}
+GSEAexp1 <- readxl::read_xlsx(here("output","GSEAall_hPSCvDEcells.xlsx")) %>% filter(p.adjust <= 0.05)
+GSEAexp2 <- readxl::read_xlsx(here("output","GSEAall_DEvBetacells.xlsx")) %>% filter(p.adjust <= 0.05)
+
+
+
+listBcells <- c("REACTOME_EXTRACELLULAR_MATRIX_ORGANIZATION", "REACTOME_PEPTIDE_LIGAND_BINDING_RECEPTORS", "REACTOME_ANTIGEN_PRESENTATION_FOLDING_ASSEMBLY_AND_PEPTIDE_LOADING_OF_CLASS_I_MHC", "REACTOME_ANTIGEN_PROCESSING_CROSS_PRESENTATION", "REACTOME_NOTCH3_ACTIVATION_AND_TRANSMISSION_OF_SIGNAL_TO_THE_NUCLEUS")
+
+DEvBcellsGSEA <- GSEAexp2 %>% filter(ID %in% listBcells)
+
+plotGSEA_DEvBcells <- DEvBcellsGSEA %>%
+  arrange(NES) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(ID=factor(ID, levels=ID)) %>%   # This trick update the factor levels
+ ggplot( aes(x=ID, y=NES, fill = p.adjust)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "GSEA Hallmark Enrichment") + xlab(NULL) +
+    theme_minimal()
+
+plotGSEA_DEvBcells
+
+#ggsave(plot = plotGSEA_DEvBcells, filename = here("plots", "Fig3_DEvBcells_GSEAPlotexplore.pdf"), device = "pdf", units = "in", width = 16, height = 8, dpi = 320)
+
+plotGSEA_DEvBcells_ALL <- GSEAexp2 %>%
+  arrange(NES) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(ID=factor(ID, levels=ID)) %>%   # This trick update the factor levels
+ ggplot( aes(x=ID, y=NES, fill = p.adjust)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "GSEA Hallmark Enrichment") + xlab(NULL) +
+    theme_minimal()
+
+plotGSEA_DEvBcells_ALL
+
+#ggsave(plot = plotGSEA_DEvBcells_ALL, filename = here("plots", "SuppFig3_DEvBcells_GSEA_ALL.pdf"), device = "pdf", units = "in", width = 14, height = 30, dpi = 320)
+
+
+
+listDEcells <- c("REACTOME_G2_M_CHECKPOINTS", "REACTOME_MRNA_SPLICING",
+"REACTOME_TRANSLATION",
+"REACTOME_NONSENSE_MEDIATED_DECAY_NMD")
+
+iPSCvDEGSEA <- GSEAexp1 %>% filter(ID %in% listDEcells)
+
+plotGSEA_iPSCvDE <- iPSCvDEGSEA %>%
+  arrange(NES) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(ID=factor(ID, levels=ID)) %>%   # This trick update the factor levels
+ ggplot( aes(x=ID, y=NES, fill = p.adjust)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "GSEA Hallmark Enrichment") + xlab(NULL) +
+    theme_minimal()
+
+plotGSEA_iPSCvDE
+
+#ggsave(plot = plotGSEA_iPSCvDE, filename = here("plots", "Fig3_iPSCvDE_GSEAPlotexplore.pdf"), device = "pdf", units = "in", width = 16, height = 8, dpi = 320)
+
+plotGSEA_iPSCvDE_ALL <- GSEAall1 %>%
+  arrange(NES) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+  mutate(ID=factor(ID, levels=ID)) %>%   # This trick update the factor levels
+ ggplot( aes(x=ID, y=NES, fill = p.adjust)) +
+    geom_bar(stat="identity", alpha=1, width=.6) +
+    coord_flip() +
+    labs(title = "GSEA Hallmark Enrichment") + xlab(NULL) +
+    theme_minimal()
+
+plotGSEA_iPSCvDE_ALL
+
+#ggsave(plot = plotGSEA_iPSCvDE_ALL, filename = here("plots", "SuppFig3_iPSCvDE_GSEA_ALL.pdf"), device = "pdf", units = "in", width = 14, height = 20, dpi = 320)
+
+```
+
+
+
+
+```{r tpm function, echo=FALSE, fig.height=4, message=FALSE, warning=FALSE}
+#Convert to TPM
+#tximport can take salmon files and determine TPM
+txiTPM <- tximport(myquantfiles, type = 'salmon', tx2gene = tx2gene, dropInfReps = TRUE, countsFromAbundance = 'lengthScaledTPM', txOut = FALSE) 
+
+#Making TPM into its own table in case that is needed. Includes GeneID. 
+tpms <- txiTPM$abundance %>%
+as.data.frame(.) %>%
+rownames_to_column(var = 'ensembl_gene_id')
+
+list4heatmap <- append(listBcells, listDEcells)
+
+leadEdgeGenes <- rbind(GSEAexp1 %>% filter(ID %in% list4heatmap) %>% pull(ID, core_enrichment)%>% as.data.frame() %>% rownames_to_column(), GSEAexp2 %>% filter(ID %in% list4heatmap) %>% pull(ID, core_enrichment)%>% as.data.frame()%>% rownames_to_column()) 
+
+leadEdgeGenes <- leadEdgeGenes[,c(2,1)] 
+colnames(leadEdgeGenes) <- c("Pathway", "symbols")
+
+elongated_leadEdgeGenes <- leadEdgeGenes %>%
+  separate_rows(symbols, sep = "/") %>%
+  rename(Pathway = Pathway, symbol = symbols)
+
+elongated_leadEdgeGenes <- left_join(elongated_leadEdgeGenes, geneInfo %>% select(symbol, gene_id)%>% unique())
+
+allCounts <- myTxi$counts[keepGenes,]
+
+allCounts <- allCounts %>% as.data.frame() %>% rownames_to_column("gene_id")
+allCounts <- allCounts[,-c(10:13)]
+listNames<- colnames(allCounts)
+normalizedCounts <- normalize.quantiles(as.matrix(allCounts[,c(2:13)])) %>% as.data.frame()
+allCounts <- cbind(allCounts[,1], normalizedCounts) 
+colnames(allCounts) <- listNames
+
+allCounts$TE_700_A <- allCounts[,2]/allCounts[,4]
+allCounts$TE_700_B <- allCounts[,3]/allCounts[,5]
+
+allCounts$TE_0_A <- allCounts[,10]/allCounts[,6]
+allCounts$TE_0_B <- allCounts[,11]/allCounts[,7]
+
+allCounts$TE_36_A <- allCounts[,12]/allCounts[,8]
+allCounts$TE_36_B <- allCounts[,13]/allCounts[,9]
+
+
+matrix4heatmap <- left_join(elongated_leadEdgeGenes, allCounts[,c(1,16:19,14,15)])
+matrix4heatmap <- matrix4heatmap[,-2]
+matrix4heatmap <- matrix4heatmap %>% distinct(gene_id, .keep_all = TRUE)
+matrix4heatmap <- column_to_rownames(matrix4heatmap, "gene_id")
+
+
+# Select expression data and pathway information
+expression_data <- matrix4heatmap %>% select(-Pathway)  # Remove the Pathway column for the heatmap
+pathway_info <- matrix4heatmap$Pathway  # Extract Pathway column
+
+# Create annotation for pathways
+annotation <- data.frame(Pathway = pathway_info)
+rownames(annotation) <- rownames(expression_data)
+
+# Create heatmap
+pathwayHeatmap <- pheatmap(
+  mat = as.matrix(expression_data),
+  annotation_row = annotation,
+  cluster_rows = FALSE,  # Keep rows ordered by Pathway
+  cluster_cols = TRUE,   # Cluster columns (expression data)
+  scale = "row",         # Normalize rows for better visualization
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  main = "Heatmap Grouped by Pathway"
+)
+
+#ggsave(plot = pathwayHeatmap, filename = here("plots", "Fig3_pathwayHeatmap.pdf"), device = "pdf", units = "in", width = 16, height = 8, dpi = 320)
+
+```
+
+
+##Categorizing genes into different regulation groups
+```{r dribo, echo=FALSE, warning = FALSE, message=FALSE, eval=TRUE}
+
+# from https://currentprotocols.onlinelibrary.wiley.com/doi/full/10.1002/cpmb.108
+
+geneSymbol <- geneInfo %>% dplyr::select("gene_id", "symbol") %>% unique()
+
+#In order to classify genes into different regulation classes, quantification of the change in the RPFs is required. 
+allCounts <- round(myTxi$counts[keepGenes,],0) #rounding the counts to the nearest whole number
+allCounts <- allCounts %>% as.data.frame() %>% rownames_to_column("gene_id")
+colnames(allCounts)
+
+#[1] "rowname"         "ip_ribo_700_A"   "ip_ribo_700_B"   "input_rna_700_A" "input_rna_700_B" "input_rna_0_A"  
+# [7] "input_rna_0_B"   "input_rna_36_A"  "input_rna_36_B"  "rp_ribo_0_A"     "rp_ribo_0_B"     "rp_ribo_36_A"   
+#[13] "rp_ribo_36_B"    "ip_ribo_0_A"     "ip_ribo_0_B"     "ip_ribo_36_A"    "ip_ribo_36_B"   
+
+allCounts_rna_hPSCvDE <- allCounts[,c(1,6:9)] %>% column_to_rownames("gene_id")
+allCounts_rna_DEvBeta <- allCounts[,c(1,4:5,8,9)] %>% column_to_rownames("gene_id")
+allCounts_ribo_hPSCvDE <- allCounts[,c(1,14:17)] %>% column_to_rownames("gene_id")
+allCounts_ribo_DEvBeta <- allCounts[,c(1:3,16,17)] %>% column_to_rownames("gene_id")
+
+metadata <- metadata %>% tidyr::unite(2:5, col = "sampleName", sep = "_", remove = FALSE)
+metadata <- metadata %>% filter(exp != "rp")
+
+rna_hPSCvDE_sampleInfo <- metadata[c(5:8),c(2,4:6)]
+rna_DEvBeta_sampleInfo <- metadata[c(3,4,7,8),c(2,4:6)]
+ribo_hPSCvDE_sampleInfo <- metadata[c(9:12),c(2,4:6)]
+ribo_DEvBeta_sampleInfo <- metadata[c(1,2,11,12),c(2,4:6)]
+
+
+#For hPSC v DE
+#Run DESeq2 for RPFs (Ribo-seq counts)
+ribo_ddsMat_hPSCvDE <- DESeqDataSetFromMatrix(countData = allCounts_ribo_hPSCvDE, colData = ribo_hPSCvDE_sampleInfo, design = ~time)
+ribo_ddsMat_hPSCvDE <- DESeq(ribo_ddsMat_hPSCvDE)
+res_ribo_hPSCvDE <- results(ribo_ddsMat_hPSCvDE,name=resultsNames(ribo_ddsMat_hPSCvDE)[2])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+res_ribo_hPSCvDE <- lfcShrink(dds = ribo_ddsMat_hPSCvDE, res = res_ribo_hPSCvDE, coef = resultsNames(ribo_ddsMat_hPSCvDE)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(geneSymbol, .)
+
+ribo_hPSCvDE <- res_ribo_hPSCvDE[which(res_ribo_hPSCvDE$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(ribo=case_when(log2FoldChange > 0 ~ "higher ribo",
+                      T ~ "lower ribo")) 
+
+ribo_hPSCvDE %>%
+  pull(ribo) %>%
+  table()
+
+
+#Run for DE v Beta cells
+#Run DESeq2 for RPFs (Ribo-seq counts)
+ribo_ddsMat_DEvBeta <- DESeqDataSetFromMatrix(countData = allCounts_ribo_DEvBeta, colData = ribo_DEvBeta_sampleInfo, design = ~time)
+ribo_ddsMat_DEvBeta <- DESeq(ribo_ddsMat_DEvBeta)
+res_ribo_DEvBeta <- results(ribo_ddsMat_DEvBeta,name=resultsNames(ribo_ddsMat_DEvBeta)[2])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+res_ribo_DEvBeta <- lfcShrink(dds = ribo_ddsMat_DEvBeta, res = res_ribo_DEvBeta, coef = resultsNames(ribo_ddsMat_DEvBeta)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(geneSymbol, .)
+
+ribo_DEvBeta <- res_ribo_DEvBeta[which(res_ribo_DEvBeta$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(ribo=case_when(log2FoldChange > 0 ~ "higher ribo",
+                      T ~ "lower ribo")) 
+
+ribo_DEvBeta %>%
+  pull(ribo) %>%
+  table()
+
+```
+
+
+
+##Detecting DTGs (differentially transcribed genes)
+
+```{r deg, echo=FALSE, warning = FALSE, message=FALSE, eval=TRUE}
+#DTGs are genes that have a significant change in the mRNA counts. To obtain DTGs, werun DESeq2 separately for mRNA counts and use the same FDR as above (FDR<0.05).
+
+#Run for hPSC v DE
+#Running DeSeq which will give mRNA counts in order to obtain DTGs
+ddsMat_rna_hPSCvDE <- DESeqDataSetFromMatrix(countData = allCounts_rna_hPSCvDE, colData = rna_hPSCvDE_sampleInfo, design = ~time)
+ddsMat_rna_hPSCvDE <- DESeq(ddsMat_rna_hPSCvDE)
+res_rna_hPSCvDE <- results(ddsMat_rna_hPSCvDE, name=resultsNames(ddsMat_rna_hPSCvDE)[2])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+res_rna_hPSCvDE <- lfcShrink(dds = ddsMat_rna_hPSCvDE, res = res_rna_hPSCvDE, coef = resultsNames(ddsMat_rna_hPSCvDE)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(geneSymbol, .)
+
+res_rna_hPSCvDE <- column_to_rownames(res_rna_hPSCvDE, var = "gene_id")
+
+res_rna_hPSCvDE[which(res_rna_hPSCvDE$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(rna=case_when(log2FoldChange > 0 ~ "higher rna",
+                      T ~ "lower rna")) %>%
+  pull(rna) %>%
+  table()
+
+
+
+#Run for DE v Beta
+#Running DeSeq which will give mRNA counts in order to obtain DTGs
+ddsMat_rna_DEvBeta <- DESeqDataSetFromMatrix(countData = allCounts_rna_DEvBeta, colData = rna_DEvBeta_sampleInfo, design = ~time)
+ddsMat_rna_DEvBeta <- DESeq(ddsMat_rna_DEvBeta)
+res_rna_DEvBeta <- results(ddsMat_rna_DEvBeta, name=resultsNames(ddsMat_rna_DEvBeta)[2])
+
+#this lfcShrink helps to reduce background noise. A conservative approach.
+res_rna_DEvBeta <- lfcShrink(dds = ddsMat_rna_DEvBeta, res = res_rna_DEvBeta, coef = resultsNames(ddsMat_rna_DEvBeta)[2]) %>% 
+  as.data.frame %>% 
+  rownames_to_column(var = "gene_id") %>%
+  inner_join(geneSymbol, .)
+
+res_rna_DEvBeta <- column_to_rownames(res_rna_DEvBeta, var = "gene_id")
+
+res_rna_DEvBeta[which(res_rna_DEvBeta$padj<0.05), ] %>%
+  as.data.frame %>%
+  mutate(rna=case_when(log2FoldChange > 0 ~ "higher rna",
+                      T ~ "lower rna")) %>%
+  pull(rna) %>%
+  table()
+
+```
+
+
+
+```{r}
+#I need riboseq FC for each group
+res_ribo_hPSCvDE 
+res_ribo_DEvBeta
+
+#lists of sig genes
+ribo_0hr_sig <- res_ribo_hPSCvDE %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% pull(gene_id)
+ribo_700hr_sig <- res_ribo_DEvBeta %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% pull(gene_id)
+
+#Here is RNA FC for each comparison
+res_rna_hPSCvDE <- res_rna_hPSCvDE %>% rownames_to_column("gene_id")
+res_rna_DEvBeta <- res_rna_DEvBeta %>% rownames_to_column("gene_id")
+
+rna_0hr_sig <- res_rna_hPSCvDE %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% pull(gene_id)
+rna_700hr_sig <- res_rna_DEvBeta %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% pull(gene_id)
+
+
+#I want a scatter plot where I compare riboFC to rnaFC. So I need that for each timepoint. 
+hPSCvDE <- left_join(res_ribo_hPSCvDE, res_rna_hPSCvDE, by = c("gene_id", "symbol")) #x is ribo, y is rna
+
+#I want to color based on what category it is in. 
+hPSCvDE <- hPSCvDE %>%
+  mutate(
+    category = case_when(
+      gene_id %in% rna_0hr_sig & gene_id %in% ribo_0hr_sig ~ "Both",   # In both lists
+      gene_id %in% rna_0hr_sig ~ "RNA",                              # In RNA list only
+      gene_id %in% ribo_0hr_sig ~ "Ribo",                            # In Ribo list only
+      TRUE ~ "None"                                                  # In neither list
+    )
+  )
+
+
+# Scatter plot with colors based on the 'category' column
+hPSCvDE_scatPlot <- ggplot(hPSCvDE %>% filter(category != "None"), aes(x = log2FoldChange.x, y = log2FoldChange.y, color = category)) +  # Replace x_value and y_value with actual column names
+  geom_point() +
+  scale_color_manual(
+    values = c("RNA" = "red", "Ribo" = "blue", "Both" = "black", "None" = "grey"), labels = c("RNA" = "RNA - 2073", "Ribo" = "Ribo - 825", "Both" = "Both - 2079", "None" = "None - 10134")) +
+  labs(
+    title = "",
+    x = "Ribo LFC hPSC v DE",
+    y = "RNA LFC hPSC v DE"
+  ) +
+  theme_minimal() + ylim(-20,20) + xlim(-20,20)+ theme(legend.position="bottom")
+
+pieDE <- hPSCvDE %>% pull(category) %>% table() %>% as.data.frame()
+colnames(pieDE) <- c("category", "freq")
+
+ggplot(pieDE %>% filter(category != "None"), aes(x = "", y = freq, fill = category)) +
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar(theta = "y") + 
+  theme_void() + scale_fill_manual(values = c("RNA" = "red", "Ribo" = "blue", "Both" = "black")) +
+  labs(fill = "Category") +
+  ggtitle("hPSC v DE")
+
+
+
+#I want a scatter plot where I compare riboFC to rnaFC. So I need that for each timepoint. 
+DEvBeta <- left_join(res_ribo_DEvBeta, res_rna_DEvBeta, by = c("gene_id", "symbol")) #x is ribo, y is rna
+
+#I want to color based on what category it is in. 
+DEvBeta <- DEvBeta %>%
+  mutate(
+    category = case_when(
+      gene_id %in% rna_700hr_sig & gene_id %in% ribo_700hr_sig ~ "Both",   # In both lists
+      gene_id %in% rna_700hr_sig ~ "RNA",                              # In RNA list only
+      gene_id %in% ribo_700hr_sig ~ "Ribo",                            # In Ribo list only
+      TRUE ~ "None"                                                  # In neither list
+    )
+  )
+
+
+# Scatter plot with colors based on the 'category' column
+DEvBeta_scatPlot <- ggplot(DEvBeta %>% filter(category != "None"), aes(x = log2FoldChange.y, y = log2FoldChange.x, color = category)) +  # Replace x_value and y_value with actual column names
+  geom_point() +
+  scale_color_manual(
+    values = c("RNA" = "red", "Ribo" = "blue", "Both" = "black", "None" = "grey"), labels = c("RNA" = "RNA - 2586", "Ribo" = "Ribo - 1381", "Both" = "Both - 4655", "None" = "None - 6489")
+  ) +
+  labs(
+    title = "",
+    x = "RNA LFC DE v Beta",
+    y = "Ribo LFC DE v Beta"
+  ) +
+  theme_minimal() + ylim(-10,10) + xlim(-10,10) + theme(legend.position="bottom")
+
+pieBeta <- DEvBeta %>% pull(category) %>% table() %>% as.data.frame()
+colnames(pieBeta) <- c("category", "freq")
+
+ggplot(pieBeta %>% filter(category != "None"), aes(x = "", y = freq, fill = category)) +
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar(theta = "y") + 
+  theme_void() + scale_fill_manual(values = c("RNA" = "red", "Ribo" = "blue", "Both" = "black")) +
+  labs(fill = "Category") +
+  ggtitle("DE v Beta")
+
+
+scatPlots <- plot_grid(hPSCvDE_scatPlot, DEvBeta_scatPlot)
+
+#ggsave(filename = here("plots","RNAriboChanges_scatter.pdf"), plot = scatPlots, width = 10, height = 7)
+
+pieDE$cell <- "hPSCvDE"
+pieDE$percent <- pieDE$freq/15111*100
+pieBeta$cell <- "DEvBeta"
+pieBeta$percent <- pieBeta$freq/15111*100
+pieALL <- rbind(pieDE, pieBeta)
+
+pieALL$cell <- factor(pieALL$cell, levels = c("hPSCvDE","DEvBeta"))
+pieALL$category <- factor(pieALL$category, levels = c("Ribo","RNA", "Both", "None"))
+
+ggplot(pieALL %>% filter(category != "None"), aes(x = category, y = freq, fill = cell)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("hPSCvDE" = "grey", "DEvBeta" = "grey1", "Both" = "black", "None" = "grey")) +
+  theme_minimal() +
+  labs(x = "", y = "Percent Total", fill = "Category", title = "")
+
+
+# Create a list of data frames
+df_list <- list(Sheet1 = hPSC_TE, Sheet2 = beta_TE, Sheet3 = hPSCvDE, Sheet4 = DEvBeta)
+
+# Write to an Excel file
+write_xlsx(df_list, here("output", "DEcomparisons2.xlsx"))
+```
+
+
+```{r}
+#I also want to compare TE. #we ended up not using these plots
+
+#this has TE for hPSC v DE
+ip_res_hPSC
+ip_res_hPSC_sig <- ip_te_0
+
+te_hPSC <- left_join(ip_res_hPSC, ip_res_hPSC_sig) %>% select(-symbol, -biotype)
+te_hPSC <- te_hPSC %>%
+       mutate_if(is.character, ~replace_na(., "None"))
+
+hPSCvDE_2 <- left_join(hPSCvDE, te_hPSC[,c(1,7)])
+hPSCvDE_2 <- hPSCvDE_2 %>% dplyr::arrange(te)
+hPSCvDE_2 %>% pull(te) %>% table()
+
+plt1 <- ggplot(hPSCvDE_2, aes(x = log2FoldChange.x, y = log2FoldChange.y, color = te)) +
+  geom_point() +
+  scale_color_manual(
+    values = c("higher te" = "red", "lower te" = "blue", "Both" = "black", "None" = "grey"), labels = c("higher te" = "Higher 164", "lower te" = "Lower - 119", "None" = "N.S. - 14828")
+  ) +
+  labs(
+    title = "",
+    x = "Ribo LFC hPSC v DE",
+    y = "RNA LFC hPSC v DE"
+  ) +
+  theme_minimal() + ylim(-20,20) + xlim(-20,20) + theme(legend.position="bottom")
+
+
+
+
+#this has TE for DE v beta
+ip_res_beta
+ip_res_beta_sig <- ip_te
+
+te_Beta <- left_join(ip_res_beta, ip_res_beta_sig) %>% select(-symbol, -biotype)
+te_Beta <- te_Beta %>%
+       mutate_if(is.character, ~replace_na(., "None"))
+
+
+DEvBeta_2 <- left_join(DEvBeta, te_Beta[,c(1,7)])
+DEvBeta_2 <- DEvBeta_2 %>% dplyr::arrange(te)
+DEvBeta_2 %>% pull(te) %>% table()
+
+plt2 <- ggplot(DEvBeta_2 %>% na.omit() %>% filter(gene_id != "ENSG00000238178.6"), aes(x = log2FoldChange.x, y = log2FoldChange.y, color = te)) +
+  geom_point() +
+  scale_color_manual(
+    values = c("higher te" = "red", "lower te" = "blue", "Both" = "black", "None" = "grey"), labels = c("higher te" = "Higher 2212", "lower te" = "Lower - 1190", "None" = "N.S. - 11709")
+  ) +
+  labs(
+    title = "",
+    x = "Ribo LFC DE v Beta",
+    y = "RNA LFC DE v Beta"
+  ) +
+  theme_minimal() + ylim(-20,20) + xlim(-20,20) + theme(legend.position="bottom")
+
+plot_grid(plt1, plt2)
+
+```
+
+
+##Many Translationally Regulated Scatter Plot
+
+
+```{r plot data, echo=FALSE, warning = FALSE, message=FALSE, eval=TRUE}
+
+ip_res_beta #TE
+geneIDbeta <- ip_res_beta %>% pull(gene_id)
+res_ribo_DEvBeta <- res_ribo_DEvBeta %>% filter(gene_id %in% geneIDbeta)
+res_rna_DEvBeta <- res_rna_DEvBeta %>% filter(gene_id %in% geneIDbeta)
+
+
+colnames(geneInfo) <- c("gene","transcript","type","symbol")
+
+geneInfo <- geneInfo %>%
+  filter(!str_detect(transcript, "^pre")) %>%
+  dplyr::select(gene, type, symbol) %>%
+  unique() %>%
+  filter(gene %in% keepGenes)
+  
+
+ip_res_beta <- ip_res_beta %>% arrange(desc(gene_id))
+res_ribo_DEvBeta <- res_ribo_DEvBeta %>% arrange(desc(gene_id))
+res_rna_DEvBeta <- res_rna_DEvBeta %>% arrange(desc(gene_id))
+
+stopifnot(identical(res_ribo_DEvBeta$gene_id,res_rna_DEvBeta$gene_id))
+
+stopifnot(identical(ip_res_beta$gene_id,res_rna_DEvBeta$gene_id))
+
+#This is grabbing all the log2FoldChanges from all the genes, but not the associated pvalues. Odd since these are not the filtered datasets. 
+d_data <- data.frame(res_ribo_DEvBeta[,c(1,2)],
+                     "ip_ribo_lfc"=res_ribo_DEvBeta$log2FoldChange,
+                     "rna_lfc"=res_rna_DEvBeta$log2FoldChange,
+                     "ip_te_lfc"=ip_res_beta$log2FoldChange)
+
+res_rna <- res_rna_DEvBeta %>% column_to_rownames("gene_id")
+ip_ribo <- res_ribo_DEvBeta %>% column_to_rownames("gene_id")
+ip_te <- ip_res_beta %>% column_to_rownames("gene_id")
+
+res_rna %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% nrow()
+
+sig_rna_strict <- rownames(res_rna[which(res_rna$padj < 0.05 & (res_rna$log2FoldChange > 1 | res_rna$log2FoldChange < -1)),])
+sig_ip_ribo_strict <-rownames(ip_ribo[which(ip_ribo$padj < 0.05 & (ip_ribo$log2FoldChange > 1 | ip_ribo$log2FoldChange < -1)),])
+sig_ip_te_strict <- rownames(ip_te[which(ip_te$padj < 0.05 & (ip_te$log2FoldChange > 1 | ip_te$log2FoldChange < -1)),])
+
+
+d_data <- d_data %>%
+ mutate(
+   strict = ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & !(gene_id %in% sig_ip_te_strict), 'Forwarded',
+               ifelse(!(gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Exclusive',
+                 ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Intensified/Buffered', 
+                        ifelse((gene_id %in% sig_rna_strict) & !(gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), "Special_buffered", "Not_sig")))))
+
+d_data <- d_data %>%
+  mutate(
+    strict = ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & !(gene_id %in% sig_ip_te_strict), 'Forwarded',
+                ifelse(!(gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Exclusive',
+                  ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Intensified/Buffered', 
+                    ifelse((gene_id %in% sig_rna_strict) & !(gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), "Special_buffered",
+                      ifelse((gene_id %in% sig_ip_te_strict), "TE_only", "Not_sig"))))))
+
+
+
+d_data$strict <- factor(d_data$strict)
+d_data$strict %>% table()
+
+d_data$strict <- factor(d_data$strict, levels = c("Not_sig","Forwarded", "Exclusive", "Intensified/Buffered", "Special_buffered"))
+
+myCols <- c("blue","red","black", "green")
+
+p_ip <- ggplot(data = d_data %>% filter(strict != "Forwarded" & strict != "Not_sig"), aes(x = rna_lfc, y = ip_ribo_lfc, color = strict)) + scale_color_manual(values = myCols) +
+  ylab("IP Ribo-seq Log2FC") +
+  xlab("RNA-seq Log2FC") +
+  geom_point(alpha=.5) +
+  xlim(-11,11) +
+  ylim(-11,11) +
+  theme_minimal()
+
+p_ip
+
+#ggsave(filename = here("plots","Fig3_BetacellsvsDE_RegScatPlot.pdf"), plot = p_ip, width = 10, height = 7)
+
+
+d_dataTable <- d_data$strict %>% table() %>% as.data.frame()
+colnames(d_dataTable) <- c("identity", "counts")
+
+d_dataTable <- d_dataTable %>% filter(identity != "Not_sig" & identity != "TE_only")
+col_Sum <- sum(d_dataTable$counts)
+d_dataTable$freq <- d_dataTable$counts/col_Sum
+
+myCols <- c("grey", "blue","red","black")
+
+bp<- ggplot(d_dataTable, aes(x="", y=freq*100, fill=identity))+
+geom_bar(width = 1, stat = "identity") + scale_fill_manual(values = myCols) + ylab("Frequency") +theme_minimal() + coord_polar("y", start=0)
+
+bp
+
+#ggsave(filename = here("plots","Fig3_BetacellsvsDE_PieRegGroups.pdf"), plot = bp, width = 10, height = 7)
+
+dataExclusive <- d_data %>% filter(strict == "Exclusive")
+dataExclusive <- left_join(dataExclusive, geneInfo) %>% filter(type == "protein_coding")
+
+dataForwarded <- d_data %>% filter(strict == "Forwarded")
+dataForwarded <- left_join(dataForwarded, geneInfo) %>% filter(type == "protein_coding")
+
+dataIntensifiedBuffered <- d_data %>% filter(strict == "Intensified/Buffered")
+dataIntensifiedBuffered <- left_join(dataIntensifiedBuffered, geneInfo) %>% filter(type == "protein_coding")
+
+dataSpecial_buffered <- d_data %>% filter(strict == "Special_buffered")
+dataSpecial_buffered <- left_join(dataSpecial_buffered, geneInfo) %>% filter(type == "protein_coding")
+
+```
+
+
+```{r}
+d_data #has lfc values and all samples as well as category information
+
+gsea_data <- d_data %>% inner_join(., gene_type, by = "gene_id")
+gsea_data <- gsea_data %>% filter(., biotype == "protein_coding") %>% na.omit()
+
+gsea_data <- gsea_data %>% mutate(direction = 
+                                    case_when(strict == "Exclusive" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Exclusive" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Forwarded" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Forwarded" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Special_buffered" & rna_lfc >0 ~ "increase",
+                                    strict == "Special_buffered" & rna_lfc < 0 ~ "decrease",
+                                    strict == "Intensified/Buffered" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Intensified/Buffered" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Not_sig" ~ "Not_sig"))
+#colnames(gsea_data)[6] <- "SYMBOL"
+
+exclusiveUP <- gsea_data %>% filter(strict == "Exclusive" & direction == "increase") %>% pull(symbol)
+exclusiveDN <- gsea_data %>% filter(strict == "Exclusive" & direction == "decrease") %>% pull(symbol)
+FwdUP <- gsea_data %>% filter(strict == "Forwarded" & direction == "increase") %>% pull(symbol)
+FwdDN <- gsea_data %>% filter(strict == "Forwarded" & direction == "decrease") %>% pull(symbol)
+specialUP <- gsea_data %>% filter(strict == "Special_buffered" & direction == "increase") %>% pull(symbol)
+specialDN <- gsea_data %>% filter(strict == "Special_buffered" & direction == "decrease") %>% pull(symbol)
+bufferUP <- gsea_data %>% filter(strict == "Intensified/Buffered" & direction == "increase") %>% pull(symbol)
+bufferDN <- gsea_data %>% filter(strict == "Intensified/Buffered" & direction == "decrease") %>% pull(symbol)
+
+
+keggAnalysis <- function(genes){
+gene_ids <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+entrez_genes_ExUP <- gene_ids$ENTREZID
+
+kegg_results <- enrichKEGG(gene = entrez_genes_ExUP,
+                           organism = 'hsa', # 'mmu' for mouse
+                           pvalueCutoff = 1, qvalueCutoff = 1)
+
+kegg_results <- as.data.frame(kegg_results)
+
+kegg_results
+}
+
+aexclusiveUP <- keggAnalysis(exclusiveUP) %>% as.data.frame()
+aexclusiveUP$geneSet <- "exclusiveUP"
+#aexclusiveDN <- keggAnalysis(exclusiveDN) %>% as.data.frame()
+#aexclusiveDN$geneSet <- "exclusiveDN"
+aFwdUP <- keggAnalysis(FwdUP) %>% as.data.frame()
+aFwdUP$geneSet <- "FwdUP"
+aFwdDN <- keggAnalysis(FwdDN) %>% as.data.frame()
+aFwdDN$geneSet <- "FwdDN"
+#aspecialUP <- keggAnalysis(specialUP) %>% as.data.frame()
+#aspecialUP$geneSet <- "specialUP"
+aspecialDN <- keggAnalysis(specialDN) %>% as.data.frame()
+aspecialDN$geneSet <- "specialDN"
+abufferUP <- keggAnalysis(bufferUP) %>% as.data.frame()
+abufferUP$geneSet <- "bufferUP"
+abufferDN <- keggAnalysis(bufferDN) %>% as.data.frame()
+abufferDN$geneSet <- "bufferDN"
+
+keggALL_UP <- rbind(aexclusiveUP,aFwdUP,abufferUP, aspecialUP)
+keggALL_UP_sig <- keggALL_UP %>% filter(p.adjust < 0.05)
+keggALL_UP_sig <- keggALL_UP_sig[,c(4,8,11,15)]
+
+keggALL_top3 <- rbind(aexclusiveUP[c(1,2,5),],aFwdUP[1:3,],aFwdDN[1:3,],aspecialDN[1:3,],abufferUP[1:3,],abufferDN[2,])
+
+listBetakeep <- c("ECM-receptor interaction","Insulin secretion", "Type II diabetes mellitus", "Protein processing in endoplasmic reticulum", "Antigen processing and presentation")
+
+keggBetaSpecific <- keggALL_UP %>% filter(Description %in% listBetakeep)
+keggBetaSpecific <- keggBetaSpecific[,c(4,8,15)]
+
+Description <- c("Antigen processing and presentation", "ECM-receptor interaction", "Protein processing in endoplasmic reticulum","Type II diabetes mellitus", "Type II diabetes mellitus")
+
+RichFactor <- c(0,0,0,0,0)
+geneSet <- c("specialUP", "specialUP", "specialUP", "specialUP", "exclusiveUP")
+
+zeroRows <- data.frame(Description = Description, FoldEnrichment = RichFactor, geneSet = geneSet)
+
+keggBetaSpecific <- rbind(keggBetaSpecific, zeroRows)
+
+
+# Pivot data to wide format
+keggBetaSpecific <- keggBetaSpecific %>%
+  pivot_wider(names_from = geneSet, values_from = FoldEnrichment, values_fill = 0)
+
+# Set the Description column as row names
+keggBetaSpecific <- keggBetaSpecific %>% as.data.frame()
+rownames(keggBetaSpecific) <- keggBetaSpecific$Description 
+
+keggBetaSpecific <- keggBetaSpecific[, -1]  # Remove Description column after setting rownames
+
+# Create a heatmap
+keggBeta <- pheatmap(as.matrix(keggBetaSpecific),
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = TRUE,    # Cluster columns
+         scale = "none",         # Do not scale values
+         color = colorRampPalette(c("grey", "red"))(50), # Color gradient
+         labels_row = rownames(keggBetaSpecific), 
+         main = "")
+
+ggsave(filename = here("plots","Fig3_BetacellsvsDE_betaSpecificKegg.pdf"), plot = keggBeta, width = 6, height = 6)
+
+# Custom colors
+custom_colors <- c("red", "blue", "grey", "black", "darkgreen", "navy")
+
+keggBetaSpecific <- keggBetaSpecific %>%
+  mutate(Description = factor(Description, levels = Description[order(FoldEnrichment)]))
+
+# Create the plot for up in beta cells
+betaKeggUP <- ggplot(keggBetaSpecific %>% filter(geneSet == "bufferUP" | geneSet == "FwdUP" | geneSet == "specialUP" | geneSet == "exclusiveUP") %>% filter(p.adjust < 0.05), aes(x = Description, y = FoldEnrichment, fill = geneSet)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "",
+    x = "",
+    y = "FoldEnrichment",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = custom_colors)
+
+# Create the plot for down in beta cells
+betaKeggDN <- ggplot(keggALL_top3 %>% filter(geneSet == "bufferDN" | geneSet == "FwdDN" | geneSet == "specialDN"), aes(x = Description, y = FoldEnrichment, fill = geneSet)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "Top 3 KEGG Terms Across Datasets",
+    x = "Description",
+    y = "Fold Enrichment",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = custom_colors)
+
+
+
+keggALL_UP_sig
+
+# Define the complete set of geneSet categories
+all_geneSets <- c("exclusiveUP", "FwdUP", "bufferUP", "specialUP")
+
+
+# Create a complete grid of Description x geneSet
+keggALL_UP_sig_complete <- keggALL_UP_sig %>%
+  distinct(Description) %>%           # Get unique descriptions
+  crossing(geneSet = all_geneSets) %>% # Cross join with all geneSet categories
+  left_join(keggALL_UP_sig, by = c("Description", "geneSet")) %>%  # Join original data
+  mutate(
+    FoldEnrichment = ifelse(is.na(FoldEnrichment), 0, FoldEnrichment),
+    p.adjust = ifelse(is.na(p.adjust), 0.05, p.adjust)
+  )
+
+keggALL_UP_sig_complete <- keggALL_UP_sig_complete[,-c(4)]
+
+# Pivot data to wide format
+keggALL_UP_sig_complete <- keggALL_UP_sig_complete %>%
+  pivot_wider(names_from = geneSet, values_from = FoldEnrichment, values_fill = 0)
+
+# Set the Description column as row names
+keggALL_UP_sig_complete <- keggALL_UP_sig_complete %>% as.data.frame()
+rownames(keggALL_UP_sig_complete) <- keggALL_UP_sig_complete$Description 
+
+keggALL_UP_sig_complete <- keggALL_UP_sig_complete[, -1]  # Remove Description column after setting rownames
+
+# Create a heatmap
+allKegg <- pheatmap(as.matrix(keggALL_UP_sig_complete),
+         cluster_rows = TRUE,    # Cluster rows
+         cluster_cols = TRUE,    # Cluster columns
+         scale = "none",         # Do not scale values
+         color = colorRampPalette(c("grey", "red"))(50), # Color gradient
+         labels_row = rownames(keggALL_UP_sig_complete), 
+         main = "")
+
+ggsave(filename = here("plots","SuppFig3_BetacellsvsDE_AllKegg.pdf"), plot = allKegg, width = 7, height = 11)
+
+
+goAnalysis <- function(genes){
+gene_ids <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+entrez_genes_ExUP <- gene_ids$ENTREZID
+
+go_results <- enrichGO(gene = entrez_genes_ExUP,
+                       OrgDb = org.Hs.eg.db,
+                       ont = "BP", # Biological Process
+                       pvalueCutoff = 0.05)
+
+
+go_results <- as.data.frame(go_results)
+
+go_results
+}
+
+
+
+aexclusiveUP <- goAnalysis(exclusiveUP) %>% as.data.frame()
+aexclusiveUP$geneSet <- "exclusiveUP"
+#aexclusiveDN <- goAnalysis(exclusiveDN) %>% as.data.frame()
+#aexclusiveDN$geneSet <- "exclusiveDN"
+aFwdUP <- goAnalysis(FwdUP) %>% as.data.frame()
+aFwdUP$geneSet <- "FwdUP"
+aFwdDN <- goAnalysis(FwdDN) %>% as.data.frame()
+aFwdDN$geneSet <- "FwdDN"
+#aspecialUP <- goAnalysis(specialUP) %>% as.data.frame()
+#aspecialUP$geneSet <- "specialUP"
+aspecialDN <- goAnalysis(specialDN) %>% as.data.frame()
+aspecialDN$geneSet <- "specialDN"
+abufferUP <- goAnalysis(bufferUP) %>% as.data.frame()
+abufferUP$geneSet <- "bufferUP"
+abufferDN <- goAnalysis(bufferDN) %>% as.data.frame()
+abufferDN$geneSet <- "bufferDN"
+
+goALL <- rbind(aexclusiveUP,aFwdUP,aFwdDN,aspecialDN,abufferUP,abufferDN)
+goALL_top3 <- rbind(aexclusiveUP[1:3,],aFwdUP[1:3,],aFwdDN[1:3,],aspecialDN[1:3,],abufferUP[1:3,],abufferDN[1:3,])
+
+
+
+
+```
+
+
+
+
+```{r}
+ip_res_hPSC #TE
+geneIDhPSC <- ip_res_hPSC %>% pull(gene_id)
+res_ribo_hPSCvDE <- res_ribo_hPSCvDE %>% filter(gene_id %in% geneIDhPSC)
+res_rna_hPSCvDE <- res_rna_hPSCvDE %>% filter(gene_id %in% geneIDhPSC)
+
+
+ip_res_hPSC <- ip_res_hPSC %>% arrange(desc(gene_id))
+res_ribo_hPSCvDE <- res_ribo_hPSCvDE %>% arrange(desc(gene_id))
+res_rna_hPSCvDE <- res_rna_hPSCvDE %>% arrange(desc(gene_id))
+
+stopifnot(identical(res_ribo_hPSCvDE$gene_id,res_rna_hPSCvDE$gene_id))
+
+stopifnot(identical(ip_res_hPSC$gene_id,res_rna_hPSCvDE$gene_id))
+
+#This is grabbing all the log2FoldChanges from all the genes, but not the associated pvalues. Odd since these are not the filtered datasets. 
+d_data <- data.frame(res_ribo_hPSCvDE[,c(1,2)],
+                     "ip_ribo_lfc"=res_ribo_hPSCvDE$log2FoldChange,
+                     "rna_lfc"=res_rna_hPSCvDE$log2FoldChange,
+                     "ip_te_lfc"=ip_res_hPSC$log2FoldChange)
+  
+
+res_rna <- res_rna_hPSCvDE %>% column_to_rownames("gene_id")
+ip_ribo <- res_ribo_hPSCvDE %>% column_to_rownames("gene_id")
+ip_te <- ip_res_hPSC %>% column_to_rownames("gene_id")
+
+res_rna %>% filter(padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1)) %>% nrow()
+
+sig_rna_strict <- rownames(res_rna[which(res_rna$padj < 0.05 & (res_rna$log2FoldChange > 1 | res_rna$log2FoldChange < -1)),])
+sig_ip_ribo_strict <-rownames(ip_ribo[which(ip_ribo$padj < 0.05 & (ip_ribo$log2FoldChange > 1 | ip_ribo$log2FoldChange < -1)),])
+sig_ip_te_strict <- rownames(ip_te[which(ip_te$padj < 0.05 & (ip_te$log2FoldChange > 1 | ip_te$log2FoldChange < -1)),])
+
+
+d_data <- d_data %>%
+ mutate(
+   strict = ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & !(gene_id %in% sig_ip_te_strict), 'Forwarded',
+               ifelse(!(gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Exclusive',
+                 ifelse((gene_id %in% sig_rna_strict) & (gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), 'Intensified/Buffered', 
+                        ifelse((gene_id %in% sig_rna_strict) & !(gene_id %in% sig_ip_ribo_strict) & (gene_id %in% sig_ip_te_strict), "Special_buffered", "Not_sig")))))
+
+
+d_data$strict <- factor(d_data$strict)
+d_data$strict %>% table()
+
+d_data$strict <- factor(d_data$strict, levels = c("Not_sig","Forwarded", "Exclusive", "Intensified/Buffered", "Special_buffered"))
+
+myCols <- c("blue","red","black", "green")
+
+p_ip <- ggplot(data = d_data %>% filter(strict != "Forwarded" & strict != "Not_sig"), aes(x = rna_lfc, y = ip_ribo_lfc, color = strict)) + scale_color_manual(values = myCols) +
+  ylab("IP Ribo-seq Log2FC") +
+  xlab("RNA-seq Log2FC") +
+  geom_point(alpha=.5) +
+  xlim(-11,11) +
+  ylim(-11,11) +
+  theme_minimal()
+
+p_ip
+
+#ggsave(filename = here("plots","Fig3_hPSCvDE_RegScatPlot.pdf"), plot = p_ip, width = 10, height = 7)
+
+
+d_dataTable <- d_data$strict %>% table() %>% as.data.frame()
+colnames(d_dataTable) <- c("identity", "counts")
+
+d_dataTable <- d_dataTable %>% filter(identity != "Not_sig")
+col_Sum <- sum(d_dataTable$counts)
+d_dataTable$freq <- d_dataTable$counts/col_Sum
+
+myCols <- c("grey", "blue","red","black")
+
+bp<- ggplot(d_dataTable, aes(x="", y=freq*100, fill=identity))+
+geom_bar(width = 1, stat = "identity") + scale_fill_manual(values = myCols) + ylab("Frequency") +theme_minimal() + coord_polar("y", start=0)
+
+bp
+
+#ggsave(filename = here("plots","Fig3_hPSC_PieRegGroups.pdf"), plot = bp, width = 10, height = 7)
+
+```
+
+
+
+```{r}
+d_data #has lfc values and all samples as well as category information
+
+gsea_data <- d_data %>% inner_join(., gene_type, by = "gene_id")
+gsea_data <- gsea_data %>% filter(., biotype == "protein_coding") %>% na.omit()
+
+gsea_data <- gsea_data %>% mutate(direction = 
+                                    case_when(strict == "Exclusive" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Exclusive" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Forwarded" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Forwarded" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Special_buffered" & rna_lfc >0 ~ "increase",
+                                    strict == "Special_buffered" & rna_lfc < 0 ~ "decrease",
+                                    strict == "Intensified/Buffered" & ip_ribo_lfc >0 ~ "increase",
+                                    strict == "Intensified/Buffered" & ip_ribo_lfc < 0 ~ "decrease",
+                                    strict == "Not_sig" ~ "Not_sig"))
+#colnames(gsea_data)[6] <- "SYMBOL"
+
+exclusiveUP <- gsea_data %>% filter(strict == "Exclusive" & direction == "increase") %>% pull(symbol)
+exclusiveDN <- gsea_data %>% filter(strict == "Exclusive" & direction == "decrease") %>% pull(symbol)
+FwdUP <- gsea_data %>% filter(strict == "Forwarded" & direction == "increase") %>% pull(symbol)
+FwdDN <- gsea_data %>% filter(strict == "Forwarded" & direction == "decrease") %>% pull(symbol)
+specialUP <- gsea_data %>% filter(strict == "Special_buffered" & direction == "increase") %>% pull(symbol)
+specialDN <- gsea_data %>% filter(strict == "Special_buffered" & direction == "decrease") %>% pull(symbol)
+bufferUP <- gsea_data %>% filter(strict == "Intensified/Buffered" & direction == "increase") %>% pull(symbol)
+bufferDN <- gsea_data %>% filter(strict == "Intensified/Buffered" & direction == "decrease") %>% pull(symbol)
+
+
+keggAnalysis <- function(genes){
+gene_ids <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+entrez_genes_ExUP <- gene_ids$ENTREZID
+
+kegg_results <- enrichKEGG(gene = entrez_genes_ExUP,
+                           organism = 'hsa', # 'mmu' for mouse
+                           pvalueCutoff = 0.05)
+
+kegg_results <- as.data.frame(kegg_results)
+
+kegg_results
+}
+
+#aexclusiveUP <- keggAnalysis(exclusiveUP) %>% as.data.frame()
+#aexclusiveUP$geneSet <- "exclusiveUP"
+aexclusiveDN <- keggAnalysis(exclusiveDN) %>% as.data.frame()
+aexclusiveDN$geneSet <- "exclusiveDN"
+aFwdUP <- keggAnalysis(FwdUP) %>% as.data.frame()
+aFwdUP$geneSet <- "FwdUP"
+aFwdDN <- keggAnalysis(FwdDN) %>% as.data.frame()
+aFwdDN$geneSet <- "FwdDN"
+#aspecialUP <- keggAnalysis(specialUP) %>% as.data.frame()
+#aspecialUP$geneSet <- "specialUP"
+#aspecialDN <- keggAnalysis(specialDN) %>% as.data.frame()
+#aspecialDN$geneSet <- "specialDN"
+#abufferUP <- keggAnalysis(bufferUP) %>% as.data.frame()
+#abufferUP$geneSet <- "bufferUP"
+abufferDN <- keggAnalysis(bufferDN) %>% as.data.frame()
+abufferDN$geneSet <- "bufferDN"
+
+keggALL_hPSC <- rbind(aexclusiveDN,aFwdUP,aFwdDN,abufferDN)
+keggALL_top3_hPSC <- rbind(aexclusiveDN,aFwdUP[1:3,],aFwdDN,abufferDN)
+
+# Custom colors
+custom_colors <- c("red", "blue", "grey", "black", "darkgreen", "navy")
+
+keggALL_top3_hPSC <- keggALL_top3_hPSC %>%
+  mutate(Description = factor(Description, levels = Description[order(FoldEnrichment)]))
+
+# Create the plot for up in beta cells
+hPSCKeggUP <- ggplot(keggALL_top3_hPSC, aes(x = Description, y = FoldEnrichment, fill = geneSet)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "Top 3 KEGG Terms Across Datasets",
+    x = "Description",
+    y = "FoldEnrichment",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = custom_colors)
+
+# Create the plot for down in beta cells
+betaKeggDN <- ggplot(keggALL_top3 %>% filter(geneSet == "bufferDN" | geneSet == "FwdDN" | geneSet == "specialDN"), aes(x = Description, y = FoldEnrichment, fill = geneSet)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "Top 3 KEGG Terms Across Datasets",
+    x = "Description",
+    y = "Fold Enrichment",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = custom_colors)
+
+
+goAnalysis <- function(genes){
+gene_ids <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+entrez_genes_ExUP <- gene_ids$ENTREZID
+
+go_results <- enrichGO(gene = entrez_genes_ExUP,
+                       OrgDb = org.Hs.eg.db,
+                       ont = "BP", # Biological Process
+                       pvalueCutoff = 0.05)
+
+
+go_results <- as.data.frame(go_results)
+
+go_results
+}
+
+
+
+aexclusiveUP <- goAnalysis(exclusiveUP) %>% as.data.frame()
+aexclusiveUP$geneSet <- "exclusiveUP"
+#aexclusiveDN <- goAnalysis(exclusiveDN) %>% as.data.frame()
+#aexclusiveDN$geneSet <- "exclusiveDN"
+aFwdUP <- goAnalysis(FwdUP) %>% as.data.frame()
+aFwdUP$geneSet <- "FwdUP"
+aFwdDN <- goAnalysis(FwdDN) %>% as.data.frame()
+aFwdDN$geneSet <- "FwdDN"
+#aspecialUP <- goAnalysis(specialUP) %>% as.data.frame()
+#aspecialUP$geneSet <- "specialUP"
+aspecialDN <- goAnalysis(specialDN) %>% as.data.frame()
+aspecialDN$geneSet <- "specialDN"
+abufferUP <- goAnalysis(bufferUP) %>% as.data.frame()
+abufferUP$geneSet <- "bufferUP"
+abufferDN <- goAnalysis(bufferDN) %>% as.data.frame()
+abufferDN$geneSet <- "bufferDN"
+
+goALL <- rbind(aexclusiveUP,aFwdUP,aFwdDN,aspecialDN,abufferUP,abufferDN)
+goALL_top3 <- rbind(aexclusiveUP[1:3,],aFwdUP[1:3,],aFwdDN[1:3,],aspecialDN[1:3,],abufferUP[1:3,],abufferDN[1:3,])
+
+
+
+
+```
+
+
+```{r tpm plots}
+
+## function for plotting TPM changes
+plotgeneTPM <- function(tpms, goi) {
+mygene <- annotation %>% dplyr::filter(symbol== goi)
+
+tpmsGene <- tpms %>% dplyr::filter(ensembl_gene_id == mygene$gene_id)
+tpmsGene <- tpmsGene[1:5]
+tpmsGene <- pivot_longer(data = tpmsGene, cols = 2:5) %>% separate(col = "name", into = c("exp","sample","time","rep"), sep = "_")
+tpmsGene <- tidyr::unite(tpmsGene, name, 2:4,  sep = "_", remove = FALSE)
+
+
+ggplot(tpmsGene, aes(x=name, y=value, fill=name)) +
+    geom_boxplot(fill = c("black", "grey")) + geom_jitter(width = .1, color = "black") +
+    ylab("TPM") +
+    xlab("") + ggtitle(mygene$symbol) +
+    theme_minimal() + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+}
+
+
+
+p_INS <- plotgeneTPM(tpms = tpms, goi = "INS")
+
+#iPSC Markers
+p_Sox2 <- plotgeneTPM(tpms = tpms, goi = "SOX2")
+p_PDX1 <- plotgeneTPM(tpms = tpms, goi = "PDX1")
+p_POU5F1 <- plotgeneTPM(tpms = tpms, goi = "POU5F1")
+
+#DE Markers
+p_SOX17 <- plotgeneTPM(tpms = tpms, goi = "SOX17")
+p_FOXA2 <- plotgeneTPM(tpms = tpms, goi = "FOXA2")
+p_RPL22 <- plotgeneTPM(tpms = tpms, goi = "RPL22")
+p_NKX6.1 <- plotgeneTPM(tpms = tpms, goi = "NKX6-1")
+
+
+p_ARX <- plotgeneTPM(tpms = tpms, goi = "ARX")
+p_PAX6 <- plotgeneTPM(tpms = tpms, goi = "PAX6")
+p_PAX4 <- plotgeneTPM(tpms = tpms, goi = "PAX4")
+p_GCG <- plotgeneTPM(tpms = tpms, goi = "GCG")
+
+#ARX, PAX6, PAX4, and GCG
+
+p_GenePlots <- plot_grid(p_Sox2  + theme(legend.position="none"),
+                         p_POU5F1  + theme(legend.position="none"),
+                         p_SOX17  + theme(legend.position="none"),
+                       p_FOXA2  + theme(legend.position="none"),
+                         p_INS  + theme(legend.position="none"),
+                       p_PDX1  + theme(legend.position="none"),
+                       p_NKX6.1 + theme(legend.position = "none"),
+                       p_RPL22  + theme(legend.position="none"),
+                       p_ARX  + theme(legend.position="none"),
+                       p_PAX6  + theme(legend.position="none"),
+                       p_PAX4  + theme(legend.position="none"),
+                       p_GCG  + theme(legend.position="none"),
+                                          nrow = 3)
+
+p_GenePlots
+
+#ggsave(plot = p_GenePlots, filename = here("plots", "GenePlots_all_Feb.pdf"), device = "pdf", units = "in", width = 8, height = 8, dpi = 320)
+
+```
+
+
