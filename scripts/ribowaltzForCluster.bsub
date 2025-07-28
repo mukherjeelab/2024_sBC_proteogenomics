@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#BSUB -n 10 # run 10 core
+#BSUB -m compute02 #run on node 2 because this works
+#BSUB -R "select[mem>30] rusage[mem=30]"
+#BSUB -o logs/ribowaltz_%J.log # write logs with jobnumber appended
+#BSUB -e logs/ribowaltz_%J.out # write err logs with jobnumber appended
+#BSUB -J ribowaltz[1]%1
+
+module load R/4.3.3
+
+Rscript riboWaltz_multi.R
+

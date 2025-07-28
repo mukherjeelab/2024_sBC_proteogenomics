@@ -1,0 +1,21 @@
+#! /usr/bin/env bash
+#BSUB -n 1 # run 10 core
+#BSUB -R "select[mem>30] rusage[mem=30]"
+#BSUB -o logs/ribocode_%J.log # write logs with jobnumber appended
+#BSUB -e logs/ribocode_%J.out # write err logs with jobnumber appended
+
+
+. /usr/share/Modules/init/bash
+module load modules modules-init modules-python
+module load python anaconda
+
+
+
+GTF="/beevol/home/bartholk/Ribotricer/gtf/gencode.v26.primary_assembly.annotation.gtf"
+FASTA="/beevol/home/neellab/genomes/human/hg38/fasta/GRCh38.primary_assembly.genome.fa"
+
+prepare_transcripts -g ${GTF} -f ${FASTA} -o RiboCode_annot
+
+metaplots -a RiboCode_annot -i ribocodeFiles
+
+RiboCode -a RiboCode_annot -c metaplots_pre_config.txt -l no -b -o RiboCode_ORFs_result_BcellsAllBED
